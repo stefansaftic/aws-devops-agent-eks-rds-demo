@@ -99,12 +99,16 @@ spec:
             httpGet:
               path: /health
               port: 8080
-            periodSeconds: 10
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 1
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            periodSeconds: 15
+            periodSeconds: 3
+            timeoutSeconds: 1
+            failureThreshold: 1
           resources:
             requests:
               cpu: 50m
