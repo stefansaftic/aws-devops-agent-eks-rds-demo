@@ -13,6 +13,6 @@ parameters:
   encrypted: "true"
   fsType: ext4
   # tagSpecification_N is read by the EBS CSI driver and applied to every
-  # dynamically-provisioned volume at CreateVolume time. Without this,
-  # SpringClean (cost-cleanup automation) flags the volumes as orphaned.
+  # dynamically-provisioned volume at CreateVolume time. The tag opts the
+  # volumes out of automated cost-cleanup tooling.
   tagSpecification_1: "auto-delete=never"

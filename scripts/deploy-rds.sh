@@ -6,6 +6,9 @@ set -euo pipefail
 REGION="${1:-us-east-1}"
 STACK_NAME="${2:-devops-agent-demo}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKLOAD_DIR="${SCRIPT_DIR}/../workload"
+
 echo "==> Fetching RDS endpoint from CloudFormation..."
 RDS_ENDPOINT=$(aws cloudformation describe-stacks \
   --stack-name "${STACK_NAME}" \
@@ -20,21 +23,24 @@ fi
 
 echo "==> RDS Endpoint: ${RDS_ENDPOINT}"
 
-# Patch the secret with the real RDS endpoint
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKLOAD_DIR="${SCRIPT_DIR}/../workload"
+# python:3.12-slim is pulled through the regional ECR pull-through cache,
+# the same way deploy.sh handles other manifests.
+ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+ECR_PREFIX="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/ecr-public"
 
 echo "==> Applying API namespace and resources..."
-sed "s|PLACEHOLDER_RDS_ENDPOINT|${RDS_ENDPOINT}|g" "${WORKLOAD_DIR}/api-app.yaml" | kubectl apply -f -
+sed -e "s|PLACEHOLDER_RDS_ENDPOINT|${RDS_ENDPOINT}|g" \
+    -e "s|__ECR_PREFIX__|${ECR_PREFIX}|g" \
+    "${WORKLOAD_DIR}/api-app.yaml" | kubectl apply -f -
 
 echo "==> Waiting for API pods to be ready..."
-kubectl rollout status deployment/api-server -n api-demo --timeout=120s
+kubectl rollout status deployment/api-server -n api-demo --timeout=180s
 
 echo "==> Applying API load generator..."
 kubectl apply -f "${WORKLOAD_DIR}/api-loadgen.yaml"
 
 echo ""
-echo "✅ API app deployed. Load generator running."
+echo "API app deployed. Load generator running."
 echo "   RDS Endpoint: ${RDS_ENDPOINT}"
 echo ""
 echo "Test:"

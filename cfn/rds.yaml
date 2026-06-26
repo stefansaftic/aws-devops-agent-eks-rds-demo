@@ -32,8 +32,8 @@ Resources:
       DBSubnetGroupDescription: !Sub ${ProjectName} RDS subnet group
       SubnetIds: !Ref PrivateSubnetIds
       Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-db-subnet-group
+        - {Key: Name, Value: !Sub '${ProjectName}-db-subnet-group'}
+        - {Key: auto-delete, Value: never}
 
   DbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -47,8 +47,8 @@ Resources:
           CidrIp: !Ref VpcCidr
           Description: Postgres from EKS pods
       Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-rds-sg
+        - {Key: Name, Value: !Sub '${ProjectName}-rds-sg'}
+        - {Key: auto-delete, Value: never}
 
   RdsInstance:
     Type: AWS::RDS::DBInstance
@@ -92,6 +92,8 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - {Key: auto-delete, Value: never}
 
 Outputs:
   RdsEndpoint:

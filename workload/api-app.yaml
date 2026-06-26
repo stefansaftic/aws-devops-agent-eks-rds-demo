@@ -1,8 +1,9 @@
 ---
-# Simple REST API (Go httpbin-style) that connects to the RDS Postgres instance.
+# REST API that connects to RDS Postgres.
 # Serves /health (DB ping), /query (simple SELECT), /write (INSERT).
-# The image is a lightweight custom container — see api-app/Dockerfile.
-# For the demo, we use a generic postgres-client image and a shell-based HTTP server.
+# Uses python:3.12-slim from ECR pull-through cache and pip-installs
+# psycopg2-binary at startup. Requires VPC internet egress (NAT) so the
+# pod can reach PyPI.
 
 apiVersion: v1
 kind: Namespace
@@ -21,7 +22,7 @@ stringData:
   DB_PORT: "5432"
   DB_NAME: "apidemo"
   DB_USER: "demoadmin"
-  DB_PASSWORD=[REDACTED_PASSWORD] "DemoPass2026!"
+  DB_PASSWORD: "DemoPass2026!"
 
 ---
 apiVersion: apps/v1
@@ -50,7 +51,7 @@ spec:
               app: api-server
       containers:
         - name: api
-          image: public.ecr.aws/docker/library/python:3.12-slim
+          image: __ECR_PREFIX__/docker/library/python:3.12-slim
           command:
             - python
             - /app/server.py
@@ -86,17 +87,23 @@ spec:
           volumeMounts:
             - name: app-code
               mountPath: /app
+          # Generous startup probe — the first run pip-installs psycopg2,
+          # which can take 20-40s on a small pod.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 24    # ~2 min
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 10
             periodSeconds: 15
           resources:
             requests:
@@ -123,7 +130,6 @@ data:
     import json
     import os
     import time
-    import traceback
 
     try:
         import psycopg2
@@ -144,7 +150,6 @@ data:
         return psycopg2.connect(**DB_CONFIG, connect_timeout=5)
 
     def init_db():
-        """Create demo table if not exists."""
         for attempt in range(30):
             try:
                 conn = get_conn()
@@ -215,7 +220,7 @@ data:
                 self.respond(404, {"error": "not found"})
 
         def log_message(self, format, *args):
-            pass  # suppress per-request logs
+            pass
 
     if __name__ == "__main__":
         init_db()

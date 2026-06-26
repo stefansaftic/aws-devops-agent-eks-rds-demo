@@ -15,6 +15,17 @@ Parameters:
   NodeInstanceType:
     Type: String
     Default: t3.medium
+  CreateEcrPullThroughCache:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: |
+      Set to 'false' if an ecr-public pull-through cache rule already
+      exists in the account. Only one rule per (prefix, upstream) is
+      allowed and PullThroughCacheRule is not importable.
+
+Conditions:
+  ShouldCreatePullThroughCache: !Equals [!Ref CreateEcrPullThroughCache, 'true']
 
 Resources:
   # ----- ECR pull-through cache for public.ecr.aws -----
@@ -27,10 +38,13 @@ Resources:
   # to:
   #   <account>.dkr.ecr.<region>.amazonaws.com/ecr-public/docker/library/postgres:16-alpine
   EcrPullThroughCacheRule:
+    Condition: ShouldCreatePullThroughCache
     Type: AWS::ECR::PullThroughCacheRule
     Properties:
       EcrRepositoryPrefix: ecr-public
       UpstreamRegistryUrl: public.ecr.aws
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   # ----- Cluster IAM role -----
   ClusterRole:
@@ -44,6 +58,8 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   ClusterSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -51,8 +67,8 @@ Resources:
       GroupDescription: EKS control plane SG
       VpcId: !Ref VpcId
       Tags:
-        - Key: Name
-          Value: !Sub ${ProjectName}-cluster-sg
+        - {Key: Name, Value: !Sub '${ProjectName}-cluster-sg'}
+        - {Key: auto-delete, Value: never}
 
   # ----- Cluster -----
   Cluster:
@@ -81,9 +97,7 @@ Resources:
             - Type: authenticator
             - Type: controllerManager
             - Type: scheduler
-      # auto-delete=never tells SpringClean and similar cost-cleanup
-      # automation to leave this cluster alone. Without this, SpringClean
-      # has been observed scaling the underlying ASG to desiredCapacity=0.
+      # auto-delete=never opts the cluster out of automated cleanup.
       Tags:
         - Key: auto-delete
           Value: never
@@ -111,6 +125,8 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - {Key: auto-delete, Value: never}
       Policies:
         - PolicyName: EcrPullThroughCache
           # First-time pull of a new tag through the pull-through cache
@@ -143,9 +159,8 @@ Resources:
         MaxUnavailable: 1
       Labels:
         workload: demo
-      # The Tags map below is propagated by EKS to the underlying ASG and
-      # to launched EC2 instances, which is what SpringClean reads when
-      # deciding what to scale to zero.
+      # Tags propagate from EKS -> ASG -> EC2 instances, which is what
+      # automated cleanup tools inspect when deciding what to remove.
       Tags:
         Name: !Sub ${ProjectName}-node
         auto-delete: never
@@ -179,6 +194,8 @@ Resources:
             OidcUrl: !Select [1, !Split ['//', !GetAtt Cluster.OpenIdConnectIssuerUrl]]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   EbsCsiAddon:
     Type: AWS::EKS::Addon
@@ -188,6 +205,8 @@ Resources:
       AddonName: aws-ebs-csi-driver
       ServiceAccountRoleArn: !GetAtt EbsCsiRole.Arn
       ResolveConflicts: OVERWRITE
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   # ----- Container Insights (pod logs + metrics to CloudWatch) -----
   CloudWatchAgentRole:
@@ -215,6 +234,8 @@ Resources:
             OidcUrl: !Select [1, !Split ['//', !GetAtt Cluster.OpenIdConnectIssuerUrl]]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   ContainerInsightsAddon:
     Type: AWS::EKS::Addon
@@ -224,6 +245,8 @@ Resources:
       AddonName: amazon-cloudwatch-observability
       ServiceAccountRoleArn: !GetAtt CloudWatchAgentRole.Arn
       ResolveConflicts: OVERWRITE
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   # Core addons (CoreDNS, kube-proxy, vpc-cni) — needed for pods to work
   VpcCniAddon:
@@ -232,6 +255,8 @@ Resources:
       ClusterName: !Ref Cluster
       AddonName: vpc-cni
       ResolveConflicts: OVERWRITE
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   KubeProxyAddon:
     Type: AWS::EKS::Addon
@@ -239,6 +264,8 @@ Resources:
       ClusterName: !Ref Cluster
       AddonName: kube-proxy
       ResolveConflicts: OVERWRITE
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   CoreDnsAddon:
     Type: AWS::EKS::Addon
@@ -247,6 +274,8 @@ Resources:
       ClusterName: !Ref Cluster
       AddonName: coredns
       ResolveConflicts: OVERWRITE
+      Tags:
+        - {Key: auto-delete, Value: never}
 
 Outputs:
   ClusterName:

@@ -8,3 +8,8 @@
 
 # OS files
 .DS_Store
+
+# Claude Code per-session permission allowlist may capture full bash
+# command lines, including any export AWS_SESSION_TOKEN=... lines run
+# in the shell. Never commit it.
+.claude/settings.local.json

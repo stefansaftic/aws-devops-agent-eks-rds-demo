@@ -88,12 +88,16 @@ Resources:
                   - logs:DescribeLogGroups
                   - logs:DescribeResourcePolicies
                 Resource: '*'
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   ExperimentLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/fis/${ProjectName}
       RetentionInDays: 7
+      Tags:
+        - {Key: auto-delete, Value: never}
 
   # ---------- Experiment 1: AZ network disruption ----------
   # Disrupts all traffic in/out of one private subnet, stranding the
@@ -125,6 +129,7 @@ Resources:
             Subnets: Subnet
       Tags:
         Name: !Sub ${ProjectName}-az-disrupt
+        auto-delete: never
 
   # ---------- Experiment 2: Pod kill ----------
   # Deletes a random Postgres pod. The target is aws:eks:pod (not the
@@ -159,6 +164,7 @@ Resources:
             Pods: Pods
       Tags:
         Name: !Sub ${ProjectName}-pod-kill
+        auto-delete: never
 
   # ---------- Experiment 3: EBS volume I/O pause ----------
   # Pauses I/O on EBS volumes tagged with our project tag.
@@ -189,6 +195,7 @@ Resources:
             Volumes: EbsVolumes
       Tags:
         Name: !Sub ${ProjectName}-ebs-pause-io
+        auto-delete: never
 
   # ---------- Experiment 4: EBS attach API hang ----------
   # Throttles ec2:AttachVolume calls made via the EBS CSI controller's IAM
@@ -223,6 +230,7 @@ Resources:
             Roles: EbsCsiRole
       Tags:
         Name: !Sub ${ProjectName}-ebs-attach-hang
+        auto-delete: never
 
 Outputs:
   FisRoleArn:

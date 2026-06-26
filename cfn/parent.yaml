@@ -18,6 +18,13 @@ Parameters:
   NodeInstanceType:
     Type: String
     Default: t3.medium
+  CreateEcrPullThroughCache:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: |
+      Set to 'false' if an ecr-public pull-through cache rule already exists.
+      deploy.sh detects this automatically.
 
 Resources:
   VpcStack:
@@ -36,6 +43,7 @@ Resources:
         ProjectName: !Ref ProjectName
         KubernetesVersion: !Ref KubernetesVersion
         NodeInstanceType: !Ref NodeInstanceType
+        CreateEcrPullThroughCache: !Ref CreateEcrPullThroughCache
         VpcId: !GetAtt VpcStack.Outputs.VpcId
         PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
 

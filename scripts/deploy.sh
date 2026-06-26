@@ -35,6 +35,20 @@ echo "==> Uploading nested templates"
 aws s3 cp "$ROOT/cfn/vpc.yaml" "s3://${BUCKET}/${PREFIX}/vpc.yaml" --region "$REGION"
 aws s3 cp "$ROOT/cfn/eks.yaml" "s3://${BUCKET}/${PREFIX}/eks.yaml" --region "$REGION"
 aws s3 cp "$ROOT/cfn/fis.yaml" "s3://${BUCKET}/${PREFIX}/fis.yaml" --region "$REGION"
+aws s3 cp "$ROOT/cfn/rds.yaml" "s3://${BUCKET}/${PREFIX}/rds.yaml" --region "$REGION"
+
+# Only one ecr-public pull-through cache rule can exist per account, and
+# PullThroughCacheRule is not importable. Detect a pre-existing rule and
+# tell the stack to skip creating one.
+if aws ecr describe-pull-through-cache-rules --region "$REGION" \
+    --query "pullThroughCacheRules[?ecrRepositoryPrefix=='ecr-public']" \
+    --output text 2>/dev/null | grep -q .; then
+  echo "==> ecr-public pull-through cache already exists — reusing"
+  CREATE_PTC="false"
+else
+  echo "==> No ecr-public pull-through cache — stack will create one"
+  CREATE_PTC="true"
+fi
 
 echo "==> Deploying parent stack (this takes ~15-20 min on first run)"
 aws cloudformation deploy \
@@ -45,7 +59,8 @@ aws cloudformation deploy \
   --parameter-overrides \
       ProjectName="$STACK" \
       TemplateBucket="$BUCKET" \
-      TemplatePrefix="$PREFIX"
+      TemplatePrefix="$PREFIX" \
+      CreateEcrPullThroughCache="$CREATE_PTC"
 
 echo "==> Fetching cluster name"
 CLUSTER="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \

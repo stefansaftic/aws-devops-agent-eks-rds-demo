@@ -1,0 +1,101 @@
+name: deploy-scenario
+
+# Deploys the EKS-FAIL-DEMO workload manifests to the demo cluster.
+# Each scenario branch contains a single broken-by-design diff (bad image,
+# OOM limits, wrong DB name, broken SQL) so merging the PR triggers the
+# failure that DevOps Agent will then investigate.
+
+on:
+  push:
+    branches:
+      - main
+      - 'scenario/**'
+    # No paths filter: the demo's whole point is "merging a scenario PR
+    # deploys broken state to the cluster", so every push to these
+    # branches should run. Public-repo Actions minutes are free.
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Scenario branch to deploy (informational; uses checked-out ref)'
+        required: false
+        default: 'main'
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: devops-agent-demo
+
+jobs:
+  deploy:
+    name: deploy ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Setting this makes the assumed role's session name visible in
+          # CloudTrail as the GitHub run id, which is useful when DevOps
+          # Agent traces "who deployed this".
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Resolve cluster name
+        id: cluster
+        run: |
+          CLUSTER=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='ClusterName'].OutputValue" \
+            --output text)
+          if [[ -z "$CLUSTER" || "$CLUSTER" == "None" ]]; then
+            echo "::error::Cluster not found. Did you run scripts/deploy.sh first?"
+            exit 1
+          fi
+          echo "name=$CLUSTER" >> "$GITHUB_OUTPUT"
+          echo "Cluster: $CLUSTER"
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ steps.cluster.outputs.name }}" --region "$AWS_REGION"
+
+      - name: Resolve RDS endpoint
+        id: rds
+        run: |
+          RDS_ENDPOINT=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='RdsEndpoint'].OutputValue" \
+            --output text)
+          echo "endpoint=$RDS_ENDPOINT" >> "$GITHUB_OUTPUT"
+          echo "RDS: $RDS_ENDPOINT"
+
+      - name: Deploy API workload (with whatever the branch contains)
+        run: |
+          set -euo pipefail
+          echo "==> Deploying ref: ${{ github.ref_name }}  sha: ${{ github.sha }}"
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          ECR_PREFIX="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/ecr-public"
+          # Annotate the deployment with the commit so investigators can
+          # cross-reference cluster state with git history.
+          sed -e "s|PLACEHOLDER_RDS_ENDPOINT|${{ steps.rds.outputs.endpoint }}|g" \
+              -e "s|__ECR_PREFIX__|${ECR_PREFIX}|g" \
+              workload/api-app.yaml | kubectl apply -f -
+          kubectl annotate deployment/api-server -n api-demo \
+            "eks-fail-demo/git-sha=${{ github.sha }}" \
+            "eks-fail-demo/git-ref=${{ github.ref_name }}" \
+            "eks-fail-demo/gha-run=${{ github.run_id }}" \
+            --overwrite
+
+      - name: Show rollout status (do not fail the job on rollout failure)
+        # We intentionally let bad scenarios "succeed" the workflow so the
+        # cluster is left in the broken state DevOps Agent will inspect.
+        # The workflow's job here is to deploy, not to validate.
+        continue-on-error: true
+        run: |
+          kubectl rollout status deployment/api-server -n api-demo --timeout=90s || true
+          kubectl get pods -n api-demo -o wide
+          kubectl describe deployment/api-server -n api-demo | tail -40

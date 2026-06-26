@@ -12,10 +12,11 @@ Agent can investigate.
 ```
 us-east-1
 ├── VPC 10.0.0.0/16
+│   ├── Public subnet (NAT only)         10.0.0.0/24  AZ-a
 │   ├── Private subnet (nodes + pods)    10.0.1.0/24  AZ-a
 │   ├── Private subnet (nodes + pods)    10.0.2.0/24  AZ-b
 │   ├── Private subnet (nodes + pods)    10.0.3.0/24  AZ-c
-│   ├── No NAT, no IGW, no internet
+│   ├── Single NAT GW (in public-a) for limited internet egress
 │   └── VPC endpoints  — ECR(api+dkr), EC2, STS, Logs, S3, SSM, SSMMessages, EC2Messages
 ├── EKS 1.35 cluster
 │   ├── Managed node group (t3.medium × 3, one per AZ)
@@ -165,6 +166,6 @@ scripts/
 
 | State | $/day | What's running |
 |---|---|---|
-| Running | **~$8.50-9.00** | 3× t3.medium ($3.00) + control plane ($2.40) + 8 interface endpoints ($1.92) + RDS db.t3.micro ($0.50) + Container Insights (~$0.50-1) |
-| Paused  | **~$4.82** | control plane + endpoints + RDS (no EC2, no ingest) |
+| Running | **~$9.50-10.00** | 3× t3.medium ($3.00) + control plane ($2.40) + 8 interface endpoints ($1.92) + RDS db.t3.micro ($0.50) + NAT GW ($1.08) + Container Insights (~$0.50-1) |
+| Paused  | **~$5.90** | control plane + endpoints + RDS + NAT GW (no EC2, no ingest) |
 | Down    | $0 | `./scripts/teardown.sh` |

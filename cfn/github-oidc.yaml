@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: GitHub Actions OIDC provider + IAM role for EKS-FAIL-DEMO deploys
+
+# One-time bootstrap stack. Deploys the IAM resources GitHub Actions needs
+# to authenticate to AWS without long-lived keys, scoped to a single repo.
+#
+# After this stack succeeds, run scripts/setup-github-oidc.sh to grant the
+# role cluster-admin on the EKS cluster via an Access Entry.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: stefansaftic
+    Description: GitHub user or org that owns the repo.
+  GitHubRepo:
+    Type: String
+    Default: aws-devops-agent-eks-rds-demo
+    Description: Repo name (without owner).
+  RoleName:
+    Type: String
+    Default: github-actions-eks-demo
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: |
+      Set to 'false' if the GitHub OIDC provider already exists in this account
+      (e.g. another stack/team created it). Reusing avoids the
+      EntityAlreadyExists conflict.
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  # GitHub Actions OIDC provider. Only one of these can exist per account.
+  # The thumbprint is required by the API but AWS no longer relies on it for
+  # validation (it uses its own CA chain check); any non-empty value works.
+  GitHubOidcProvider:
+    Condition: ShouldCreateOidcProvider
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              # Restrict to this repo only. The trailing :* allows any branch,
+              # tag, PR, or environment within the repo.
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${GitHubRepo}:*
+      Policies:
+        - PolicyName: DeployScenarioPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Needed for `aws eks update-kubeconfig` and the EKS Access
+              # Entry lookup. kubectl auth itself is granted via the access
+              # entry created by setup-github-oidc.sh, not via IAM.
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                Resource: '*'
+              # deploy-rds.sh reads the RDS endpoint from the parent stack
+              # output before patching it into the K8s Secret.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: '*'
+      Tags:
+        - {Key: auto-delete, Value: never}
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt GitHubActionsRole.Arn
+    Description: Set this as the AWS_ROLE_ARN repository variable in GitHub.
+  RoleName:
+    Value: !Ref GitHubActionsRole
