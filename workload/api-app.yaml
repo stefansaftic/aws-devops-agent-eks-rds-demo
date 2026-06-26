@@ -51,7 +51,7 @@ spec:
               app: api-server
       containers:
         - name: api
-          image: __ECR_PREFIX__/docker/library/python:3.12-slim
+          image: __ECR_PREFIX__/docker/library/python:3.99-slim
           command:
             - python
             - /app/server.py
