@@ -20,7 +20,7 @@ type: Opaque
 stringData:
   DB_HOST: "PLACEHOLDER_RDS_ENDPOINT"
   DB_PORT: "5432"
-  DB_NAME: "apidemo"
+  DB_NAME: "apidemo_v2"
   DB_USER: "demoadmin"
   DB_PASSWORD: "DemoPass2026!"
 
