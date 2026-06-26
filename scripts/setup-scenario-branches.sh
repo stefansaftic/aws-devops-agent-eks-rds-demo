@@ -101,10 +101,11 @@ echo
 echo "===================================================================="
 echo " Scenarios ready. To run a scenario end-to-end:"
 echo
-echo "   git push origin scenario/bad-image-tag        # if not pushed yet"
-echo "   # open a PR from scenario/bad-image-tag to main, merge it"
-echo "   # GitHub Actions deploys -> cluster breaks"
-echo "   # DevOps Agent investigates -> traces to recent commit"
+echo "   1. open a PR from scenario/bad-image-tag into deploy (NOT main)"
+echo "   2. merge it -> GitHub Actions deploys -> cluster breaks"
+echo "   3. DevOps Agent investigates -> traces to recent commit"
+echo "   4. when done: ./scripts/reset-deploy.sh   # resets deploy = main"
 echo
-echo " Or run the workflow manually for any branch via the GitHub UI."
+echo " Or run the workflow manually for any branch via the GitHub UI"
+echo " (Actions -> deploy-scenario -> Run workflow -> pick the ref)."
 echo "===================================================================="

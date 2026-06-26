@@ -6,18 +6,20 @@ name: deploy-scenario
 # failure that DevOps Agent will then investigate.
 
 on:
-  # Only triggers on push to main (PR merges) and manual dispatch.
-  # Pushing a scenario/* branch on its own doesn't deploy — you have to
-  # open a PR and merge it. Otherwise creating all four branches at once
-  # would deploy four conflicting states back-to-back.
+  # Triggers on push to the `deploy` branch and on manual dispatch only.
+  # Demo flow:
+  #   - main is the clean baseline; never deploys directly
+  #   - PR a scenario/* branch into `deploy`; merging fires this workflow
+  #   - after the demo, scripts/reset-deploy.sh resets deploy back to main
+  # That way main stays uncluttered by demo merges/reverts.
   push:
-    branches: [main]
+    branches: [deploy]
   workflow_dispatch:
     inputs:
       ref:
         description: 'Branch or SHA to deploy (e.g. scenario/bad-image-tag)'
         required: false
-        default: 'main'
+        default: 'deploy'
 
 permissions:
   id-token: write   # required for OIDC

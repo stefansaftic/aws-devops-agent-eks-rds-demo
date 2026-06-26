@@ -107,6 +107,29 @@ hits `/health`, `/query`, `/write` endpoints and logs success/failure to stdout
 5. Run `az-disrupt` FIS experiment → Postgres pod goes NotReady → DevOps Agent investigates
 6. Agent traces: pod events → node condition → subnet disruption → FIS experiment
 
+### "Bad PR" demo flow (GitHub Actions)
+
+GitHub Actions deploys `workload/api-app.yaml` to the cluster on every
+push to the `deploy` branch. `main` is never deployed directly — it
+stays the clean baseline, so demo merges/reverts don't pollute history.
+
+```
+main (clean baseline) ────────────────────────────────────────
+     │
+     └── deploy  ←── PR scenario/bad-image-tag → merge → cluster breaks
+                  ←── reset-deploy.sh resets deploy = main when done
+```
+
+1. `./scripts/setup-scenario-branches.sh push` — once, to publish the four
+   broken-by-design branches (bad-image-tag, oom-limits, wrong-db-name,
+   bad-sql) to the remote.
+2. Open a PR from any `scenario/*` branch into `deploy` and merge it.
+   GitHub Actions deploys the bad manifest; cluster breaks.
+3. Ask DevOps Agent to investigate. The Deployment is annotated with the
+   merged commit's sha, ref, and GHA run id, so the agent can trace
+   from cluster state back to the PR.
+4. `./scripts/reset-deploy.sh` resets `deploy` to `main` when you're done.
+
 ## Connect to a Postgres pod
 
 ```bash
@@ -131,10 +154,13 @@ hits `/health`, `/query`, `/write` endpoints and logs success/failure to stdout
 ```
 cfn/
   parent.yaml         — orchestrates the nested stacks
-  vpc.yaml            — VPC, private subnets, VPC endpoints (no NAT)
+  vpc.yaml            — VPC, private subnets, NAT, VPC endpoints
   eks.yaml            — cluster, node group, EBS CSI addon, IRSA
   fis.yaml            — FIS role + 4 experiment templates
   rds.yaml            — RDS Postgres instance, subnet group, security group
+  github-oidc.yaml    — GitHub Actions OIDC provider + IAM role
+.github/workflows/
+  deploy-scenario.yml — deploys workload/api-app.yaml on push to `deploy`
 workload/
   storageclass.yaml   — gp3 default StorageClass
   postgres.yaml       — Postgres StatefulSet (3 replicas, topology-spread)
@@ -159,6 +185,9 @@ scripts/
   ssh-node.sh           — SSM Session Manager shell on a node
   pause.sh              — scale nodes to 0 (cost-saver)
   resume.sh             — scale nodes back to 3
+  setup-github-oidc.sh        — bootstrap the GitHub Actions OIDC role
+  setup-scenario-branches.sh  — create the four broken-by-design branches
+  reset-deploy.sh             — reset `deploy` branch to `main` after a demo
   teardown.sh           — clean teardown including orphan EBS sweep
 ```
 
