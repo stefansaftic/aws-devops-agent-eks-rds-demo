@@ -91,18 +91,18 @@ spec:
           # which can take 20-40s on a small pod.
           startupProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: 8080
             periodSeconds: 5
             failureThreshold: 24    # ~2 min
           readinessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: 8080
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: 8080
             periodSeconds: 15
           resources:
