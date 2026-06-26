@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: {app: postgres}
+spec:
+  clusterIP: None
+  selector: {app: postgres}
+  ports:
+    - port: 5432
+      name: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 3
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      terminationGracePeriodSeconds: 10
+      # Force one pod per AZ so each replica's EBS volume lives in a
+      # different AZ. This is what makes the AZ-disrupt experiment
+      # interesting — the stranded pod cannot reschedule because its
+      # PV is pinned to the dead AZ.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {app: postgres}
+      containers:
+        - name: postgres
+          # Image path uses the ECR pull-through cache so kubelet pulls from
+          # the regional ECR endpoint (reachable via VPC endpoints), not
+          # public.ecr.aws over the internet. __ECR_PREFIX__ is substituted
+          # by deploy.sh to <account>.dkr.ecr.<region>.amazonaws.com/ecr-public
+          image: __ECR_PREFIX__/docker/library/postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - {name: POSTGRES_PASSWORD, value: demo}
+            - {name: POSTGRES_DB, value: demo}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 4Gi

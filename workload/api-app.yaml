@@ -1,0 +1,239 @@
+---
+# Simple REST API (Go httpbin-style) that connects to the RDS Postgres instance.
+# Serves /health (DB ping), /query (simple SELECT), /write (INSERT).
+# The image is a lightweight custom container — see api-app/Dockerfile.
+# For the demo, we use a generic postgres-client image and a shell-based HTTP server.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: api-demo
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rds-credentials
+  namespace: api-demo
+type: Opaque
+stringData:
+  DB_HOST: "PLACEHOLDER_RDS_ENDPOINT"
+  DB_PORT: "5432"
+  DB_NAME: "apidemo"
+  DB_USER: "demoadmin"
+  DB_PASSWORD=[REDACTED_PASSWORD] "DemoPass2026!"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: api-demo
+  labels:
+    app: api-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: api-server
+      containers:
+        - name: api
+          image: public.ecr.aws/docker/library/python:3.12-slim
+          command:
+            - python
+            - /app/server.py
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: rds-credentials
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: rds-credentials
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: rds-credentials
+                  key: DB_NAME
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rds-credentials
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rds-credentials
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: app-code
+              mountPath: /app
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: app-code
+          configMap:
+            name: api-server-code
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-server-code
+  namespace: api-demo
+data:
+  server.py: |
+    """Minimal REST API that talks to RDS Postgres."""
+    import http.server
+    import json
+    import os
+    import time
+    import traceback
+
+    try:
+        import psycopg2
+    except ImportError:
+        import subprocess, sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary", "-q"])
+        import psycopg2
+
+    DB_CONFIG = {
+        "host": os.environ["DB_HOST"],
+        "port": int(os.environ.get("DB_PORT", "5432")),
+        "dbname": os.environ["DB_NAME"],
+        "user": os.environ["DB_USER"],
+        "password": os.environ["DB_PASSWORD"],
+    }
+
+    def get_conn():
+        return psycopg2.connect(**DB_CONFIG, connect_timeout=5)
+
+    def init_db():
+        """Create demo table if not exists."""
+        for attempt in range(30):
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS events (
+                        id SERIAL PRIMARY KEY,
+                        ts TIMESTAMP DEFAULT now(),
+                        source VARCHAR(64),
+                        payload TEXT
+                    )
+                """)
+                conn.commit()
+                cur.close()
+                conn.close()
+                print("DB initialized", flush=True)
+                return
+            except Exception as e:
+                print(f"DB init attempt {attempt+1} failed: {e}", flush=True)
+                time.sleep(2)
+        print("WARNING: could not initialize DB after 30 attempts", flush=True)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def respond(self, code, body):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def do_GET(self):
+            if self.path == "/health":
+                try:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                    conn.close()
+                    self.respond(200, {"status": "ok", "db": "connected"})
+                except Exception as e:
+                    self.respond(503, {"status": "unhealthy", "error": str(e)})
+
+            elif self.path == "/query":
+                try:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("SELECT id, ts::text, source, payload FROM events ORDER BY id DESC LIMIT 10")
+                    rows = [{"id": r[0], "ts": r[1], "source": r[2], "payload": r[3]} for r in cur.fetchall()]
+                    cur.close()
+                    conn.close()
+                    self.respond(200, {"events": rows, "count": len(rows)})
+                except Exception as e:
+                    self.respond(500, {"error": str(e)})
+
+            elif self.path == "/write":
+                try:
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO events (source, payload) VALUES (%s, %s) RETURNING id",
+                               (os.environ.get("HOSTNAME", "unknown"), f"ping-{int(time.time())}"))
+                    new_id = cur.fetchone()[0]
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    self.respond(200, {"inserted": new_id})
+                except Exception as e:
+                    self.respond(500, {"error": str(e)})
+            else:
+                self.respond(404, {"error": "not found"})
+
+        def log_message(self, format, *args):
+            pass  # suppress per-request logs
+
+    if __name__ == "__main__":
+        init_db()
+        server = http.server.HTTPServer(("0.0.0.0", 8080), Handler)
+        print("API server listening on :8080", flush=True)
+        server.serve_forever()
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server
+  namespace: api-demo
+spec:
+  selector:
+    app: api-server
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP

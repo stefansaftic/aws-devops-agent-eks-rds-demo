@@ -1,0 +1,145 @@
+# Load generator: 3 Deployments, each running pgbench against one Postgres
+# instance. Each Deployment is independent so when an FIS experiment kills
+# or strands one Postgres pod, you can see exactly which loadgen starts
+# failing while the others keep producing TPS.
+#
+# Each loadgen container:
+#   1. Waits until its target Postgres is accepting connections.
+#   2. Runs `pgbench -i` once if the pgbench schema isn't there.
+#   3. Loops `pgbench -c 4 -j 2 -T 60 -P 10 -R 50` indefinitely.
+#
+# pgbench output goes to stdout -> kubelet -> Fluent Bit -> CloudWatch.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-0
+  labels: {app: loadgen, target: postgres-0}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen, target: postgres-0}
+  template:
+    metadata:
+      labels: {app: loadgen, target: postgres-0}
+    spec:
+      containers:
+        - name: pgbench
+          image: __ECR_PREFIX__/docker/library/postgres:16-alpine
+          env:
+            - {name: PGHOST, value: postgres-0.postgres}
+            - {name: PGUSER, value: postgres}
+            - {name: PGPASSWORD, value: demo}
+            - {name: PGDATABASE, value: demo}
+            # Fail fast on a hung TCP connect so loops restart visibly
+            # (instead of silently waiting on default TCP timeout).
+            - {name: PGCONNECT_TIMEOUT, value: '5'}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -u
+              echo "[loadgen] target=$PGHOST"
+              until pg_isready -t 5; do
+                echo "[loadgen] waiting for $PGHOST..."
+                sleep 5
+              done
+              if ! psql -tAc "SELECT 1 FROM pgbench_accounts LIMIT 1" >/dev/null 2>&1; then
+                echo "[loadgen] initializing pgbench schema on $PGHOST"
+                pgbench -i -s 5 -q || echo "[loadgen] init failed, will retry"
+              fi
+              echo "[loadgen] entering load loop against $PGHOST"
+              while true; do
+                pgbench -c 4 -j 2 -T 60 -P 10 -R 50 \
+                  || echo "[loadgen] pgbench exited with error against $PGHOST"
+              done
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits:   {cpu: 250m, memory: 256Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-1
+  labels: {app: loadgen, target: postgres-1}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen, target: postgres-1}
+  template:
+    metadata:
+      labels: {app: loadgen, target: postgres-1}
+    spec:
+      containers:
+        - name: pgbench
+          image: __ECR_PREFIX__/docker/library/postgres:16-alpine
+          env:
+            - {name: PGHOST, value: postgres-1.postgres}
+            - {name: PGUSER, value: postgres}
+            - {name: PGPASSWORD, value: demo}
+            - {name: PGDATABASE, value: demo}
+            - {name: PGCONNECT_TIMEOUT, value: '5'}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -u
+              echo "[loadgen] target=$PGHOST"
+              until pg_isready -t 5; do
+                echo "[loadgen] waiting for $PGHOST..."
+                sleep 5
+              done
+              if ! psql -tAc "SELECT 1 FROM pgbench_accounts LIMIT 1" >/dev/null 2>&1; then
+                echo "[loadgen] initializing pgbench schema on $PGHOST"
+                pgbench -i -s 5 -q || echo "[loadgen] init failed, will retry"
+              fi
+              echo "[loadgen] entering load loop against $PGHOST"
+              while true; do
+                pgbench -c 4 -j 2 -T 60 -P 10 -R 50 \
+                  || echo "[loadgen] pgbench exited with error against $PGHOST"
+              done
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits:   {cpu: 250m, memory: 256Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen-2
+  labels: {app: loadgen, target: postgres-2}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen, target: postgres-2}
+  template:
+    metadata:
+      labels: {app: loadgen, target: postgres-2}
+    spec:
+      containers:
+        - name: pgbench
+          image: __ECR_PREFIX__/docker/library/postgres:16-alpine
+          env:
+            - {name: PGHOST, value: postgres-2.postgres}
+            - {name: PGUSER, value: postgres}
+            - {name: PGPASSWORD, value: demo}
+            - {name: PGDATABASE, value: demo}
+            - {name: PGCONNECT_TIMEOUT, value: '5'}
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -u
+              echo "[loadgen] target=$PGHOST"
+              until pg_isready -t 5; do
+                echo "[loadgen] waiting for $PGHOST..."
+                sleep 5
+              done
+              if ! psql -tAc "SELECT 1 FROM pgbench_accounts LIMIT 1" >/dev/null 2>&1; then
+                echo "[loadgen] initializing pgbench schema on $PGHOST"
+                pgbench -i -s 5 -q || echo "[loadgen] init failed, will retry"
+              fi
+              echo "[loadgen] entering load loop against $PGHOST"
+              while true; do
+                pgbench -c 4 -j 2 -T 60 -P 10 -R 50 \
+                  || echo "[loadgen] pgbench exited with error against $PGHOST"
+              done
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits:   {cpu: 250m, memory: 256Mi}

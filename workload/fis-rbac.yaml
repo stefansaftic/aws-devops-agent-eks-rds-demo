@@ -1,0 +1,29 @@
+# ServiceAccount + RBAC for the FIS pod-delete action.
+# FIS uses this SA to authenticate to the kube API and delete pods.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fis-experiment
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fis-experiment
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, get, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fis-experiment
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fis-experiment
+subjects:
+  - kind: ServiceAccount
+    name: fis-experiment
+    namespace: default

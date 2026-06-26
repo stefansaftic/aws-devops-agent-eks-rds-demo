@@ -1,0 +1,53 @@
+---
+# Continuous load generator for the API server.
+# Sends requests to /health, /query, /write every second to produce
+# a clear signal in CloudWatch when the RDS connection breaks.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-loadgen
+  namespace: api-demo
+  labels:
+    app: api-loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-loadgen
+  template:
+    metadata:
+      labels:
+        app: api-loadgen
+    spec:
+      containers:
+        - name: loadgen
+          image: public.ecr.aws/docker/library/python:3.12-slim
+          command:
+            - python
+            - -c
+            - |
+              import urllib.request, time, json, sys
+
+              API = "http://api-server.api-demo.svc.cluster.local"
+              endpoints = ["/health", "/query", "/write"]
+
+              print("API loadgen started", flush=True)
+              while True:
+                  for ep in endpoints:
+                      try:
+                          req = urllib.request.urlopen(f"{API}{ep}", timeout=5)
+                          data = json.loads(req.read())
+                          status = "OK"
+                      except Exception as e:
+                          status = f"FAIL: {e}"
+                      ts = time.strftime("%H:%M:%S")
+                      print(f"[{ts}] {ep:8s} -> {status}", flush=True)
+                  time.sleep(1)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi

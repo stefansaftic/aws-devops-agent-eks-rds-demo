@@ -1,0 +1,10 @@
+# Logs from experiment runs
+*.log
+
+# Terraform state
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# OS files
+.DS_Store

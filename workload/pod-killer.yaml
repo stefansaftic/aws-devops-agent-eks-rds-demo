@@ -1,0 +1,73 @@
+# Continuous chaos: a CronJob that kills a random Postgres pod every 2 min.
+#
+# This runs entirely in-cluster (no FIS), so kills don't show up in FIS or
+# CloudTrail attributed to a chaos service — investigations have to find
+# the CronJob itself by tracing pod owner references / events.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-killer
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-killer
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-killer
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-killer
+subjects:
+  - kind: ServiceAccount
+    name: pod-killer
+    namespace: default
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pod-killer
+  namespace: default
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: pod-killer
+          restartPolicy: Never
+          containers:
+            - name: kill
+              # bitnami/kubectl image, pulled via the ECR pull-through cache
+              # so we don't need internet egress.
+              image: __ECR_PREFIX__/bitnami/kubectl:latest
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -eu
+                  POD=$(kubectl get pods -l app=postgres \
+                    -o jsonpath='{.items[*].metadata.name}' \
+                    | tr ' ' '\n' | shuf -n 1)
+                  if [ -z "$POD" ]; then
+                    echo "no postgres pods found"; exit 0
+                  fi
+                  echo "killing $POD"
+                  kubectl delete pod "$POD" --grace-period=5
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits:   {cpu: 100m, memory: 64Mi}

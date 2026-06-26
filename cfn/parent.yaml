@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS-FAIL-DEMO - Parent stack orchestrating VPC + EKS + FIS + RDS
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: devops-agent-demo
+  TemplateBucket:
+    Type: String
+    Description: S3 bucket containing nested templates (vpc.yaml, eks.yaml, fis.yaml, rds.yaml)
+  TemplatePrefix:
+    Type: String
+    Default: devops-agent-demo
+    Description: S3 key prefix where nested templates live
+  KubernetesVersion:
+    Type: String
+    Default: '1.35'
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
+
+Resources:
+  VpcStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.amazonaws.com/${TemplatePrefix}/vpc.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  EksStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.amazonaws.com/${TemplatePrefix}/eks.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        KubernetesVersion: !Ref KubernetesVersion
+        NodeInstanceType: !Ref NodeInstanceType
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+
+  FisStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: EksStack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.amazonaws.com/${TemplatePrefix}/fis.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        ClusterName: !GetAtt EksStack.Outputs.ClusterName
+        ClusterArn: !GetAtt EksStack.Outputs.ClusterArn
+        PrivateSubnetA: !GetAtt VpcStack.Outputs.PrivateSubnetA
+        EbsCsiRoleArn: !GetAtt EksStack.Outputs.EbsCsiRoleArn
+        EbsCsiRoleName: !GetAtt EksStack.Outputs.EbsCsiRoleName
+        AwsAccountId: !Ref AWS::AccountId
+
+  RdsStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.amazonaws.com/${TemplatePrefix}/rds.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        VpcCidr: !GetAtt VpcStack.Outputs.VpcCidr
+        PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+
+Outputs:
+  ClusterName:
+    Value: !GetAtt EksStack.Outputs.ClusterName
+  ClusterEndpoint:
+    Value: !GetAtt EksStack.Outputs.ClusterEndpoint
+  PrivateSubnetA:
+    Value: !GetAtt VpcStack.Outputs.PrivateSubnetA
+  PrivateSubnetB:
+    Value: !GetAtt VpcStack.Outputs.PrivateSubnetB
+  PrivateSubnetC:
+    Value: !GetAtt VpcStack.Outputs.PrivateSubnetC
+  VpcCidr:
+    Value: !GetAtt VpcStack.Outputs.VpcCidr
+  AzDisruptExperimentId:
+    Value: !GetAtt FisStack.Outputs.AzDisruptId
+  PodKillExperimentId:
+    Value: !GetAtt FisStack.Outputs.PodKillId
+  EbsPauseIoExperimentId:
+    Value: !GetAtt FisStack.Outputs.EbsPauseIoId
+  EbsAttachHangExperimentId:
+    Value: !GetAtt FisStack.Outputs.EbsAttachHangId
+  RdsEndpoint:
+    Value: !GetAtt RdsStack.Outputs.RdsEndpoint
+  RdsPort:
+    Value: !GetAtt RdsStack.Outputs.RdsPort
+  RdsSecurityGroupId:
+    Value: !GetAtt RdsStack.Outputs.RdsSecurityGroupId
+  RdsInstanceId:
+    Value: !GetAtt RdsStack.Outputs.RdsInstanceId
