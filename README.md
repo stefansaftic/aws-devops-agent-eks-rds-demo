@@ -100,7 +100,11 @@ hits `/health`, `/query`, `/write` endpoints and logs success/failure to stdout
 
 ### Recommended demo flow
 
-1. Show healthy state: API returning 200, load generator running clean
+See [`DEMO.md`](DEMO.md) for the full live runbook (pre-demo checklist,
+window layout, three failure flavours with timings, recovery, and a
+20-minute script). Quick highlights:
+
+1. Show healthy state: API returning 200, load generators running clean
 2. Run `rds-break-sg.sh` → API starts failing → ask DevOps Agent to investigate
 3. Agent traces: pod logs → connection timeout → RDS SG analysis → identifies missing rule
 4. Fix it live (`rds-fix-sg.sh`), show recovery
