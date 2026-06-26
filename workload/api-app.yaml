@@ -108,10 +108,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 32Mi
             limits:
               cpu: 200m
-              memory: 256Mi
+              memory: 64Mi
       volumes:
         - name: app-code
           configMap:
