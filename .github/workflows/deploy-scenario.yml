@@ -6,17 +6,16 @@ name: deploy-scenario
 # failure that DevOps Agent will then investigate.
 
 on:
+  # Only triggers on push to main (PR merges) and manual dispatch.
+  # Pushing a scenario/* branch on its own doesn't deploy — you have to
+  # open a PR and merge it. Otherwise creating all four branches at once
+  # would deploy four conflicting states back-to-back.
   push:
-    branches:
-      - main
-      - 'scenario/**'
-    # No paths filter: the demo's whole point is "merging a scenario PR
-    # deploys broken state to the cluster", so every push to these
-    # branches should run. Public-repo Actions minutes are free.
+    branches: [main]
   workflow_dispatch:
     inputs:
-      scenario:
-        description: 'Scenario branch to deploy (informational; uses checked-out ref)'
+      ref:
+        description: 'Branch or SHA to deploy (e.g. scenario/bad-image-tag)'
         required: false
         default: 'main'
 
@@ -35,6 +34,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # On workflow_dispatch, honour the user's chosen ref (e.g. a
+          # scenario branch). On a real push, github.ref already points
+          # at the merged commit on main.
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
