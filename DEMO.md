@@ -453,12 +453,6 @@ specific PR:
 aws cloudformation describe-stacks --region us-east-1 \
   --stack-name devops-agent-demo \
   --query "Stacks[0].Tags[?starts_with(Key, 'last-deploy-')]" --output table
-NESTED=$(aws cloudformation describe-stack-resource --region us-east-1 \
-  --stack-name devops-agent-demo --logical-resource-id Ec2PostgresStack \
-  --query "StackResourceDetail.PhysicalResourceId" --output text)
-aws cloudformation describe-stacks --region us-east-1 \
-  --stack-name "$NESTED" \
-  --query "Stacks[0].Tags[?starts_with(Key, 'last-deploy-')]" --output table
 ```
 
 ```text
@@ -476,11 +470,12 @@ Investigation chain:
   3. ec2 describe-volumes  →  Iops: 3000 (down from 6000)
   4. ec2 describe-volumes-modifications  →  StartTime ≈ T-3 min,
      TargetIops 3000
-  5. cloudformation describe-stacks on the volume's stack  →
+  5. cloudformation describe-stacks on the parent stack  →
      Tags include last-deploy-sha / -ref / -gha-run pointing at the
      scenario/cost-optimization PR
-  6. Open the PR diff: gp3 volume's `Iops: 6000` and `Throughput: 250`
-     properties were removed
+  6. Open the PR diff in cfn/parent.yaml: defaults for
+     Ec2PostgresDataVolumeIops/Throughput dropped from 6000/250 to
+     3000/125 — the gp3 baseline
   7. Root cause: PR dropped provisioned IOPS to the gp3 baseline,
      workload is now read-IOPS bound, TPS halved
   8. Fix: revert (re-add Iops: 6000) or right-size to actual demand
