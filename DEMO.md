@@ -1,86 +1,143 @@
 # Demo runbook
 
-End-to-end script for showing this demo to someone live. Assumes the
-cluster is already deployed (see [`README.md`](README.md) for the
-one-time setup).
+End-to-end script for showing this demo to someone live, structured as
+notebook cells you click through top to bottom in
+[markdowner](../markdowner/). Each `bash` block has a **▶ Run** button;
+clicking it sends the block into the persistent shell at the bottom of
+the window.
+
+`text` blocks (no Run button) are reference material — agent prompts,
+GitHub UI steps, pasteable explanations.
 
 The demo has three parts:
 
-1. **Baseline** — show the cluster is healthy and traffic is flowing
+1. **Baseline** — confirm the cluster is healthy and traffic is flowing
 2. **Failure** — pick one of three flavours, trigger it, ask DevOps Agent
 3. **Recovery** — restore the cluster
 
-Total time: 15-20 min for a single failure. Add ~5 min per extra
+Total time: 15–20 min for a single failure. Add ~5 min per extra
 failure if you want to chain a few.
 
+> **markdowner tip:** the shell is persistent. `cd`/`export`/`kill %1`
+> from earlier blocks all carry into later ones in this file. Use the
+> *Clear* button on the terminal to wipe the screen between sections;
+> it doesn't reset the shell state.
+
 ---
 
-## 0. Pre-demo checklist (do beforehand)
+## 0. Pre-demo checklist
 
-Run **at least 5 minutes before** the demo so everything has settled:
+Refresh AWS credentials in the markdowner shell first. The export
+commands need to be pasted (different token each time), so set them
+once in the terminal pane below before clicking any Run buttons.
 
-```bash
-# Refresh AWS credentials in this shell.
-# (Verify with `aws sts get-caller-identity`.)
-
-# Make sure your kubeconfig points at the demo cluster.
-aws eks update-kubeconfig --name devops-agent-demo --region us-east-1
-
-# Quick health check — every pod should be Running.
-kubectl get pods -A | grep -vE 'Running|Completed' | grep -v NAME
-
-# Make sure the deploy branch is at main (no leftover scenario commit).
-./scripts/reset-deploy.sh
-
-# Start the in-cluster Postgres load generator (pgbench).
-# Without this, Postgres pods are idle — pod-kill / ebs-pause won't
-# show any visible impact. The API load generator is started for you
-# automatically by deploy-rds.sh.
-./scripts/start-load.sh
-./scripts/load-status.sh    # verify TPS > 0 on all three targets
+```text
+export AWS_ACCESS_KEY_ID=…
+export AWS_SECRET_ACCESS_KEY=…
+export AWS_SESSION_TOKEN=…
 ```
 
-Have these tabs/windows open before you start talking:
+Verify the credentials are good:
 
-| Window | Command |
-|---|---|
-| **A** Cluster overview | `watch -n 2 kubectl get pods -A` |
-| **B** API load generator logs | `kubectl logs -n api-demo -l app=api-loadgen -f --tail=20` |
-| **C** Postgres load TPS | `watch -n 5 ./scripts/load-status.sh` |
-| **D** Free terminal | (for `kubectl describe`, `curl`, FIS commands) |
-| **E** GitHub Actions tab | <https://github.com/stefansaftic/aws-devops-agent-eks-rds-demo/actions> |
-| **F** GitHub branches view | <https://github.com/stefansaftic/aws-devops-agent-eks-rds-demo/branches> |
+```bash
+aws sts get-caller-identity
+```
+
+Point kubectl at the cluster:
+
+```bash
+aws eks update-kubeconfig --name devops-agent-demo --region us-east-1
+```
+
+Quick health check — every pod should be `Running`:
+
+```bash
+kubectl get pods -A | grep -vE 'Running|Completed' | grep -v NAME || echo "all pods healthy"
+```
+
+Make sure the `deploy` branch is at `main` (no leftover scenario
+commit from a previous run):
+
+```bash
+./scripts/reset-deploy.sh
+```
+
+Start the in-cluster Postgres load generator (pgbench). Without this,
+the Postgres pods are idle and FIS experiments like `pod-kill` and
+`ebs-pause` produce no visible signal. The API load generator was
+started for you automatically by `deploy-rds.sh`.
+
+```bash
+./scripts/start-load.sh
+```
+
+Confirm pgbench is producing TPS on all three Postgres replicas:
+
+```bash
+./scripts/load-status.sh
+```
 
 ---
 
-## 1. Baseline (~2 min)
+## 1. Show the healthy baseline
 
-Walk through what you're showing. Sample script:
+Run these one at a time to walk through what's deployed.
 
-> *"This is an EKS cluster spread across three AZs. Three Postgres
-> replicas, one per AZ, each on its own EBS volume. A REST API talking
-> to RDS Postgres. Two load generators — one hitting the API, one
-> running pgbench against the in-cluster Postgres. Everything green.*
->
-> *Now we'll break things in three different ways and see how DevOps
-> Agent investigates each one."*
-
-Quick smoke test from a free terminal:
+Three Postgres pods, one per AZ, with their EBS volumes:
 
 ```bash
-kubectl port-forward -n api-demo svc/api-server 8080:80 &
-PF=$!
-curl -s http://localhost:8080/health      # {"status": "ok", "db": "connected"}
-curl -s http://localhost:8080/query       # last 10 events
-curl -s http://localhost:8080/write       # inserts a new event
-kill $PF
+kubectl get pods -l app=postgres -o wide
+kubectl get pvc
+```
+
+Three API server pods + the load generator hammering them:
+
+```bash
+kubectl get pods -n api-demo -o wide
+```
+
+Last few entries from the API load generator (proves traffic is
+flowing through the API → RDS path):
+
+```bash
+kubectl logs -n api-demo -l app=api-loadgen --tail=10
+```
+
+Smoke-test the API directly. Port-forward in the background, hit the
+endpoints, then stop the port-forward.
+
+```bash
+kubectl port-forward -n api-demo svc/api-server 18080:80 >/tmp/pf.log 2>&1 &
+PF_PID=$!
+sleep 2
+curl -s http://localhost:18080/health
+echo
+curl -s http://localhost:18080/write
+echo
+curl -s http://localhost:18080/query | head -c 400
+echo
+kill $PF_PID 2>/dev/null
+unset PF_PID
+echo "[port-forward stopped]"
+```
+
+```text
+What you'd say while running these:
+
+  "EKS cluster across three AZs. Three Postgres replicas, one per AZ,
+   each on its own EBS volume. A REST API talking to RDS Postgres. Two
+   load generators — one hitting the API, one running pgbench against
+   in-cluster Postgres. Everything green.
+
+   Now we'll break things in three different ways and see how DevOps
+   Agent investigates each one."
 ```
 
 ---
 
 ## 2. Pick a failure flavour
 
-Three flavours, in order of complexity. **For a 20-minute slot, pick
+Three flavours, increasing complexity. **For a 20-minute slot, pick
 one — Flavour C is the strongest narrative.** For a longer demo, chain
 A → B → C.
 
@@ -90,25 +147,33 @@ Best for "AWS-native infrastructure incident" stories. The cluster
 breaks at the AWS layer and the agent has to trace from k8s symptoms
 back to an AWS API call.
 
+Trigger:
+
 ```bash
 ./scripts/run-experiment.sh az-disrupt
 ```
 
-Within ~30s: the Postgres pod in AZ-a goes `NotReady`. It can't
-reschedule because its EBS PV is pinned to AZ-a.
+Wait ~30s, then check pod state:
 
-Ask DevOps Agent:
+```bash
+kubectl get pods -l app=postgres -o wide
+kubectl get nodes
+```
 
-> *"My EKS cluster `devops-agent-demo` has a Postgres pod that's been
-> NotReady for a few minutes. Investigate."*
+```text
+Hand off to the agent:
+
+  "My EKS cluster `devops-agent-demo` has a Postgres pod that's been
+   NotReady for a few minutes. Investigate."
 
 Investigation chain the agent should follow:
-1. `kubectl get pods -n default -o wide` → `postgres-0` NotReady
-2. Pod events / node condition → node in AZ-a is `NotReady`
-3. `aws ec2 describe-route-tables` / NACLs on the AZ-a subnet → blocked
-4. Tag on the disruption → FIS experiment ARN
+  1. kubectl get pods -n default -o wide  →  postgres-0 NotReady
+  2. Pod events / node condition          →  node in AZ-a is NotReady
+  3. aws ec2 describe-route-tables / NACLs on the AZ-a subnet → blocked
+  4. Tag on the disruption                 →  FIS experiment ARN
+```
 
-**Other FIS options:**
+Other FIS options (replace `az-disrupt`):
 
 | Experiment | Symptom | What the agent traces |
 |---|---|---|
@@ -121,32 +186,50 @@ Investigation chain the agent should follow:
 Best for "human ran a wrong command" stories. Doesn't involve git
 history; the agent has to read live AWS state.
 
+Break it:
+
 ```bash
-./scripts/rds-break-sg.sh        # remove RDS security group ingress on port 5432
-# wait ~30s — API pods now return 503 from /health
+./scripts/rds-break-sg.sh
 ```
 
-Window B (the API loadgen logs) starts going red. Ask the agent:
+Wait ~30s, then check the API pods' view of the world:
 
-> *"API in `api-demo` namespace returning 503s. Find the cause."*
+```bash
+kubectl logs -n api-demo -l app=api-server --tail=15
+```
 
-Chain:
-1. `kubectl logs api-server-...` → `connection timed out` to RDS endpoint
-2. DNS for the RDS endpoint resolves correctly → not a DNS issue
-3. RDS instance is `available` → not an RDS-side outage
-4. RDS security group has no ingress rule for port 5432 from VPC CIDR
-5. Recommendation: re-add the rule
+```text
+Hand off to the agent:
 
-Recover live so they see it work:
+  "API in `api-demo` namespace returning 503s. Find the cause."
+
+Investigation chain:
+  1. kubectl logs api-server-...   →  "connection timed out" to RDS endpoint
+  2. DNS for the RDS endpoint resolves correctly       →  not a DNS issue
+  3. RDS instance is `available`                       →  not an RDS-side outage
+  4. RDS security group has no ingress rule on 5432    →  the cause
+  5. Recommendation: re-add the rule
+```
+
+Recover live, so they see it work:
 
 ```bash
 ./scripts/rds-fix-sg.sh
 ```
 
-Within seconds, window B turns green again.
+Confirm the API recovered:
 
-**Other manual scenario:**
-- `./scripts/rds-kill-connections.sh` sets `max_connections=1` and reboots → API pods intermittently fail with "too many connections". Recover with `./scripts/rds-fix-connections.sh`.
+```bash
+sleep 10
+kubectl logs -n api-demo -l app=api-server --tail=10
+```
+
+Other manual scenario:
+
+```bash
+# ./scripts/rds-kill-connections.sh   # set max_connections=1
+# ./scripts/rds-fix-connections.sh    # restore default parameter group
+```
 
 ### Flavour C — Bad PR caused this (GitHub Actions)
 
@@ -166,87 +249,153 @@ The repo has six pre-built broken-by-design branches:
 | `feature/healthz-probe-paths` | Rolling update stuck mid-rollout | Medium — looks like a refactor |
 | `feature/tighten-probes` | Pods flap Ready ↔ NotReady, intermittent 5xx | Hard — looks like an incident-driven improvement |
 
-For a demo, pick **`feature/tighten-probes`**: it's the most realistic
-shape of a real production-breaking PR — a senior engineer's well-
-meaning improvement that misses one detail.
+For a demo, **`feature/tighten-probes`** is the most realistic shape of
+a real production-breaking PR: a senior engineer's well-meaning
+improvement that misses one detail.
 
-#### Steps
+```text
+Steps in the GitHub UI (not a Run block — do this in the browser):
 
-1. Open the PR comparison in window F:
-   <https://github.com/stefansaftic/aws-devops-agent-eks-rds-demo/compare/deploy...feature/tighten-probes>
-2. Click **Create pull request**.
-3. **Crucial:** the base branch dropdown defaults to `main`. **Change
-   it to `deploy`.** Otherwise the merge pollutes main and the
-   workflow won't fire.
-4. Click **Merge pull request** → confirm.
-5. Switch to window E (Actions tab). The `deploy-scenario` workflow
-   starts within ~10 seconds and runs for under a minute.
-6. Watch window A. New api-server pods come up, then start flapping
-   `1/1 Ready ↔ 0/1` every minute or two. Window B (loadgen) shows
-   periodic 503s. The cluster is in a "brownout" state — not down,
-   just unreliable.
+1. Open https://github.com/stefansaftic/aws-devops-agent-eks-rds-demo/compare/deploy...feature/tighten-probes
+2. Click "Create pull request"
+3. CRUCIAL: change the base branch dropdown from `main` to `deploy`.
+   Otherwise the merge pollutes main and the workflow won't fire.
+4. Click "Merge pull request" → confirm.
+5. Watch the Actions tab — the workflow runs in under a minute.
+```
 
-Wait until you see at least one Ready→NotReady flap (~2-3 min after
-merge), then ask the agent:
+While the workflow is running and immediately after, snapshot the API
+state every ~30 seconds. With aggressive probes, pods will start
+flipping Ready ↔ NotReady within 2–3 minutes of the rollout.
 
-> *"We just merged a PR and now the API has flaky availability. The
-> pods aren't crashing but the loadgen is seeing intermittent failures.
-> Investigate."*
+```bash
+kubectl get pods -n api-demo -o wide
+kubectl get endpoints api-server -n api-demo
+```
+
+Watch the load generator notice the brownout (intermittent ERR lines):
+
+```bash
+kubectl logs -n api-demo -l app=api-loadgen --tail=20
+```
+
+Inspect the merged Deployment — note the workflow stamps git metadata
+on it as annotations:
+
+```bash
+kubectl get deploy api-server -n api-demo -o yaml | grep -A3 'annotations:'
+```
+
+Pick a flapping pod and look at why it's failing the probe:
+
+```bash
+POD=$(kubectl get pods -n api-demo -l app=api-server -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod -n api-demo "$POD" | tail -30
+unset POD
+```
+
+```text
+Hand off to the agent:
+
+  "We just merged a PR and now the API has flaky availability. The
+   pods aren't crashing but the loadgen is seeing intermittent
+   failures. Investigate."
 
 Investigation chain:
-1. `kubectl get pods -n api-demo -w` → Ready column flipping
-2. `kubectl get endpoints api-server -n api-demo` → endpoint count
-   fluctuating between 2 and 3
-3. `kubectl describe pod` on a flapping pod → `Readiness probe failed:
-   context deadline exceeded`
-4. **Cluster → git bridge:** `kubectl get deploy api-server -n
-   api-demo -o yaml` shows annotations the workflow stamps on:
-   - `eks-fail-demo/git-sha` — the merged commit
-   - `eks-fail-demo/git-ref` — `feature/tighten-probes`
-   - `eks-fail-demo/gha-run` — the GitHub Actions run id
-5. Pull up the commit on GitHub. The diff: `timeoutSeconds: 1`,
-   `failureThreshold: 1`, `periodSeconds: 2`/`3`.
-6. Cross-reference with `server.py` (also in api-app.yaml): `/health`
-   does a real DB roundtrip. Under normal RDS jitter, occasional
-   `/health` calls take >1s. `failureThreshold: 1` means a single
-   slow probe = NotReady.
-7. **Root cause:** the probe contract is tighter than the actual
-   `/health` SLO supports.
-8. Recommended fix: relax the timeout, or split health checks
-   (shallow `/healthz` for liveness, deep `/health` for readiness).
+  1. kubectl get pods -n api-demo -w        →  Ready column flipping
+  2. kubectl get endpoints api-server -n api-demo  →  count between 2 and 3
+  3. kubectl describe pod                   →  "Readiness probe failed:
+                                                context deadline exceeded"
+  4. kubectl get deploy api-server -o yaml  →  annotations point at the
+                                                merged commit:
+                                                  eks-fail-demo/git-sha
+                                                  eks-fail-demo/git-ref
+                                                  eks-fail-demo/gha-run
+  5. Pull up the commit on GitHub. Diff: timeoutSeconds: 1,
+     failureThreshold: 1, periodSeconds: 2/3.
+  6. Cross-reference with server.py (in api-app.yaml): /health does a
+     real DB roundtrip. Under normal RDS jitter, occasional /health
+     calls take >1s. failureThreshold: 1 means a single slow probe =
+     NotReady.
+  7. Root cause: probe contract is tighter than the actual /health SLO.
+  8. Fix: relax timeout, or split shallow /healthz (liveness) from deep
+     /health (readiness).
 
-This is the demo's main act because it shows the agent **bridging
-cluster state to git history** — the actual hard part of being on-call.
+This is the demo's main act because it shows the agent BRIDGING
+CLUSTER STATE TO GIT HISTORY — the actual hard part of being on-call.
+```
 
 ---
 
-## 3. Recovery (~30 seconds)
+## 3. Recovery
 
-Match the recovery to the failure flavour:
+Pick the recovery that matches the failure flavour you ran.
 
-| Flavour | Recovery |
-|---|---|
-| A — FIS | Wait for experiment timeout, or `aws fis stop-experiment --id <id> --region us-east-1` |
-| B — RDS scripts | `./scripts/rds-fix-sg.sh` (or `rds-fix-connections.sh`) |
-| C — Bad PR | `./scripts/reset-deploy.sh` — resets `deploy` branch to `main` and force-pushes; the workflow re-applies the clean baseline |
+### After Flavour A (FIS experiment)
 
-In all cases, watch windows A and B return to steady state. For
-Flavour C, the `reset-deploy.sh` script triggers a real workflow run,
-so you can also point at the Actions tab to show the recovery is
-itself a CI deploy.
+The experiment auto-stops on its own duration. To stop it sooner:
+
+```bash
+RUNNING=$(aws fis list-experiments --region us-east-1 \
+  --query "experiments[?state.status=='running'].id" --output text)
+for id in $RUNNING; do aws fis stop-experiment --region us-east-1 --id "$id"; done
+unset RUNNING
+```
+
+### After Flavour B (RDS scripts)
+
+Already done above with `rds-fix-sg.sh`. If you ran the connections
+scenario:
+
+```bash
+# ./scripts/rds-fix-connections.sh
+```
+
+### After Flavour C (Bad PR)
+
+Reset the `deploy` branch back to `main` and force-push. The workflow
+re-applies the clean baseline:
+
+```bash
+./scripts/reset-deploy.sh
+```
+
+Force a rollout so existing pods pick up the rollback (Secret value
+changes don't restart pods on their own):
+
+```bash
+kubectl rollout restart deployment/api-server -n api-demo
+kubectl rollout status deployment/api-server -n api-demo --timeout=120s
+```
+
+Confirm recovery:
+
+```bash
+kubectl get pods -n api-demo -o wide
+kubectl logs -n api-demo -l app=api-loadgen --tail=10
+```
 
 ---
 
 ## 4. Cleanup (after the demo)
 
+Remove the pgbench load generators:
+
 ```bash
-./scripts/stop-load.sh           # remove the pgbench load generators
-./scripts/reset-deploy.sh        # safety: leave deploy = main for next time
+./scripts/stop-load.sh
 ```
 
-Cluster keeps running at ~$10/day. To shut it down entirely:
+Safety reset of the deploy branch for next time:
 
 ```bash
+./scripts/reset-deploy.sh
+```
+
+The cluster keeps running at ~$10/day. To shut it down entirely, run
+this **outside markdowner** in a regular terminal (it's a 15-minute
+operation that you don't want to abort by closing a window):
+
+```text
 ./scripts/teardown.sh
 ```
 
@@ -254,20 +403,20 @@ Cluster keeps running at ~$10/day. To shut it down entirely:
 
 ## Suggested 20-minute script
 
-```
-0:00  Baseline (windows A-F open, narrate the architecture)         2 min
-2:00  pod-kill experiment                                            3 min
+```text
+0:00  Section 0 + 1 — credentials, baseline, healthy state             3 min
+3:00  Flavour A: pod-kill experiment                                   3 min
        - "Self-healing — agent confirms recovery happened"
-5:00  rds-break-sg                                                   4 min
+6:00  Flavour B: rds-break-sg                                          4 min
        - "Operator made a mistake — agent traces it"
        - rds-fix-sg.sh, show recovery
-9:00  Merge feature/tighten-probes PR                                8 min
+10:00 Flavour C: merge feature/tighten-probes PR                       8 min
        - Walk through the PR diff (looks legit)
        - Merge, watch Actions, watch pods start flapping
        - Hand off to agent: "API is flaky, investigate"
        - Agent traces probes -> commit -> root cause
        - reset-deploy.sh, show recovery
-17:00 Wrap-up + Q&A                                                  3 min
+18:00 Wrap-up + Q&A                                                    2 min
 ```
 
 Escalating narrative: self-heal → human error → committed code defect.
