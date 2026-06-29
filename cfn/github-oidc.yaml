@@ -102,20 +102,19 @@ Resources:
                 Resource:
                   - !Sub arn:aws:s3:::devops-agent-demo-templates-${AWS::AccountId}-*/*
                   - !Sub arn:aws:s3:::*-templates-${AWS::AccountId}-${AWS::Region}/*
-              # CFN performs the IOPS/throughput change on the gp3 data
-              # volume by calling ec2:ModifyVolume. Plus tag operations
-              # for stack-level tag propagation (CFN tries to push the
-              # stack's --tags onto each underlying resource on update).
-              # Without CreateTags/DeleteTags, an update-stack with
-              # stack-level tags fails on the first taggable resource
-              # CFN visits, then fails the rollback for the same reason.
+              # CFN performs the IOPS/throughput change via
+              # ec2:ModifyVolume. The workflow does NOT pass
+              # stack-level --tags on update-stack -- doing so
+              # propagates tags to every taggable resource under the
+              # stack and would require ec2:CreateTags + Describe on
+              # the entire VPC topology. We instead correlate PRs to
+              # changes via cloudformation:describe-stack-events +
+              # describe-volumes-modifications timestamps.
               - Effect: Allow
                 Action:
                   - ec2:ModifyVolume
                   - ec2:DescribeVolumes
                   - ec2:DescribeVolumesModifications
-                  - ec2:CreateTags
-                  - ec2:DeleteTags
                 Resource: '*'
       Tags:
         - {Key: auto-delete, Value: never}

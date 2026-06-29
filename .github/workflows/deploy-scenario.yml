@@ -140,6 +140,12 @@ jobs:
           # adds explicit parameter values), CFN reconciles top-down,
           # nested stacks pick up the new parameter values, and CFN
           # issues the underlying AWS API calls (e.g. ec2:ModifyVolume).
+          # NOTE: no --tags here. Stack-level tags propagate to every
+          # taggable resource under the stack, which requires broad
+          # ec2:CreateTags + ec2:Describe* on the OIDC role and trips
+          # IAM gaps that fail the update AND the rollback. The agent
+          # correlates PRs to changes via describe-stack-events +
+          # describe-volumes-modifications timestamps instead.
           echo "==> Updating parent stack ${STACK_NAME}"
           aws cloudformation update-stack \
             --stack-name "${STACK_NAME}" \
@@ -152,11 +158,6 @@ jobs:
                 ParameterKey=KubernetesVersion,UsePreviousValue=true \
                 ParameterKey=NodeInstanceType,UsePreviousValue=true \
                 ParameterKey=CreateEcrPullThroughCache,UsePreviousValue=true \
-            --tags \
-                Key=last-deploy-sha,Value=${{ github.sha }} \
-                Key=last-deploy-ref,Value=${{ github.ref_name }} \
-                Key=last-deploy-gha-run,Value=${{ github.run_id }} \
-                Key=auto-delete,Value=never \
             2>&1 | tee /tmp/upd-parent.log || {
               # "No updates are to be performed" is fine -- means the
               # branch's cfn/** changes don't actually affect anything
