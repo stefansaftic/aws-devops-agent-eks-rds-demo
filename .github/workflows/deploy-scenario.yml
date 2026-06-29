@@ -107,33 +107,19 @@ jobs:
           kubectl describe deployment/api-server -n api-demo | tail -40
 
       # ----- CFN updates (cost-optimization scenario) -----
-      # If the branch changes anything under cfn/**, re-upload the
-      # nested templates to the existing template bucket and run
-      # cloudformation update-stack on the parent. The scenario branch
-      # for this is `scenario/cost-optimization` which drops the gp3
-      # data volume's Iops and Throughput properties.
-      - name: Detect CFN changes
-        id: cfn-detect
-        run: |
-          # Compare against deploy's previous tip; if that's missing
-          # (first run, force-push), fall back to the parent commit.
-          BEFORE="${{ github.event.before }}"
-          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            BEFORE=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
-          fi
-          CHANGED=$(git diff --name-only "$BEFORE" HEAD -- cfn/ || true)
-          echo "changed<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$CHANGED"     >> "$GITHUB_OUTPUT"
-          echo "EOF"          >> "$GITHUB_OUTPUT"
-          if [[ -n "$CHANGED" ]]; then
-            echo "any=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "any=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Changed CFN files:"; echo "$CHANGED"
-
+      # Always re-upload the nested templates and run update-stack on
+      # the parent. CFN's update-stack is idempotent: if nothing in the
+      # template body or parameter defaults actually changed, it returns
+      # "No updates are to be performed", which the step below treats
+      # as benign and exits 0.
+      #
+      # Earlier versions of this workflow gated the step on a
+      # `git diff --name-only` against the previous deploy tip. That
+      # broke under actions/checkout's default shallow clone (depth=1),
+      # which leaves the previous SHA outside the local repo and makes
+      # the diff silently empty. Removing the gate is simpler and
+      # avoids a recurrence.
       - name: Apply CFN update
-        if: steps.cfn-detect.outputs.any == 'true'
         run: |
           set -euo pipefail
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
