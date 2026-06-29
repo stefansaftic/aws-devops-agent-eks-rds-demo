@@ -30,10 +30,14 @@ Parameters:
     Default: m5.large
   Ec2PostgresDataVolumeIops:
     Type: Number
-    Default: 6000
+    # Reduced from 6000 to gp3 baseline (3000) per FinOps Q3 right-sizing.
+    # Saves ~$15/mo per volume; observed P99 fits in baseline with headroom.
+    Default: 3000
   Ec2PostgresDataVolumeThroughput:
     Type: Number
-    Default: 250
+    # Reduced from 250 MB/s to gp3 baseline (125) per FinOps Q3 right-sizing.
+    # Saves ~$5/mo per volume.
+    Default: 125
 
 Resources:
   VpcStack:
