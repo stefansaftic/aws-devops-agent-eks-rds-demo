@@ -116,6 +116,19 @@ Resources:
                   - ec2:DescribeVolumes
                   - ec2:DescribeVolumesModifications
                 Resource: '*'
+              # cfn/ec2-postgres.yaml resolves the AmazonLinux 2023 AMI
+              # via the public AWS-owned SSM parameter
+              # /aws/service/ami-amazon-linux-latest/* . CFN re-resolves
+              # this on every update-stack call, even when nothing else
+              # in the template body changed. Without this permission,
+              # any update on a stack that uses {{resolve:ssm:...}} for
+              # an AMI ref aborts immediately.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}::parameter/aws/service/*
       Tags:
         - {Key: auto-delete, Value: never}
 
