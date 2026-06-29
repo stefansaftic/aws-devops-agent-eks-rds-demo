@@ -103,14 +103,19 @@ Resources:
                   - !Sub arn:aws:s3:::devops-agent-demo-templates-${AWS::AccountId}-*/*
                   - !Sub arn:aws:s3:::*-templates-${AWS::AccountId}-${AWS::Region}/*
               # CFN performs the IOPS/throughput change on the gp3 data
-              # volume by calling ec2:ModifyVolume. Restrict to volumes
-              # tagged for this project so the role can't fiddle with
-              # arbitrary EBS volumes.
+              # volume by calling ec2:ModifyVolume. Plus tag operations
+              # for stack-level tag propagation (CFN tries to push the
+              # stack's --tags onto each underlying resource on update).
+              # Without CreateTags/DeleteTags, an update-stack with
+              # stack-level tags fails on the first taggable resource
+              # CFN visits, then fails the rollback for the same reason.
               - Effect: Allow
                 Action:
                   - ec2:ModifyVolume
                   - ec2:DescribeVolumes
                   - ec2:DescribeVolumesModifications
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
                 Resource: '*'
       Tags:
         - {Key: auto-delete, Value: never}
