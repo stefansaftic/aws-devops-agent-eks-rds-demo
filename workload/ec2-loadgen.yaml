@@ -42,7 +42,12 @@ metadata:
   labels:
     app: ec2-pg-loadgen
 spec:
-  replicas: 1
+  # 4 replicas drives sustained ~2800 IOPS against the gp3 volume.
+  # That's ~47% of the baseline 6000 IOPS ceiling (comfortable, queue
+  # length ~2) but 94% of the 3000 IOPS ceiling. The cost-optimization
+  # PR drops to 3000, demand exceeds ceiling, the brownout shows up
+  # as a queue-length spike and a TPS drop.
+  replicas: 4
   selector:
     matchLabels: {app: ec2-pg-loadgen}
   template:
@@ -79,23 +84,34 @@ metadata:
   namespace: api-demo
 data:
   loadgen.py: |
-    """Continuous read-only Postgres workload + CloudWatch TPS publisher.
+    """Continuous Postgres write-heavy workload + CloudWatch TPS publisher.
 
-    Runs a tight loop of indexed SELECTs against the pgbench tables on
-    the EC2 Postgres instance. Measures transactions completed per
-    minute and publishes the rate as EksFailDemo/Pgbench:Tps with
-    Target=ec2-postgres so the CloudWatch dashboard plots it.
+    Implements the pgbench '-N' transaction (no-vacuum, skip branches/
+    tellers updates):
 
-    The query mix mirrors `pgbench -S` (SELECT-only): a single primary-
-    key lookup against pgbench_accounts. With scale=200 the table is
-    ~3 GB and most lookups hit cold pages once shared_buffers warms;
-    that's what makes the workload IOPS-bound rather than cache-bound.
+        BEGIN;
+        UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;
+        SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
+        INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (...);
+        COMMIT;
+
+    Why writes, not reads: with pgbench scale 1500 (~22 GB) on an 8 GB
+    RAM host, a uniform-random read-only workload eventually warms the
+    OS page cache for the hot pages that get re-touched. The cache hit
+    rate climbs and AWS/EBS VolumeReadOps decays toward zero. The IOPS
+    knob the cost-optimization scenario tweaks then has no visible
+    effect on TPS.
+
+    Writes don't have that problem: every COMMIT triggers fsync on WAL,
+    and dirty data pages get written back to /data on the next
+    checkpoint regardless of cache state. VolumeWriteOps stays high
+    indefinitely, the workload becomes IOPS-bound, and the demo cliff
+    is visible.
     """
     import os, random, sys, time
     import subprocess
 
-    # NAT is available -> install runtime deps (psycopg2 needs libpq +
-    # build tools, but psycopg2-binary ships compiled wheels).
+    # NAT is available -> install runtime deps.
     for pkg in ("psycopg2-binary==2.9.9", "boto3==1.35.36"):
         try:
             __import__(pkg.split("==")[0].replace("-binary",""))
@@ -110,22 +126,35 @@ data:
         dbname=os.environ["DB_NAME"], user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"], connect_timeout=5,
     )
-    NACCOUNTS = 200 * 100_000   # pgbench scale 200
+    SCALE = int(os.environ.get("PGBENCH_SCALE", "1500"))
+    NACCOUNTS = SCALE * 100_000
+    NBRANCHES = SCALE
+    NTELLERS  = SCALE * 10
     REGION = os.environ.get("AWS_REGION","us-east-1")
 
     cw = boto3.client("cloudwatch", region_name=REGION)
 
     def run_round():
-        """One ~60s round. Returns transactions completed in the round."""
+        """One ~60s round of pgbench -N transactions. Returns count."""
         deadline = time.time() + 60
         n = 0
         with psycopg2.connect(**DB) as conn:
-            conn.autocommit = True
             with conn.cursor() as cur:
                 while time.time() < deadline:
-                    aid = random.randint(1, NACCOUNTS)
+                    aid    = random.randint(1, NACCOUNTS)
+                    bid    = random.randint(1, NBRANCHES)
+                    tid    = random.randint(1, NTELLERS)
+                    delta  = random.randint(-5000, 5000)
+                    # pgbench -N transaction: skip branches/tellers
+                    # updates that contend on the small lookup tables.
+                    cur.execute("UPDATE pgbench_accounts SET abalance = abalance + %s WHERE aid = %s",
+                                (delta, aid))
                     cur.execute("SELECT abalance FROM pgbench_accounts WHERE aid = %s", (aid,))
                     cur.fetchone()
+                    cur.execute("INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) "
+                                "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)",
+                                (tid, bid, aid, delta))
+                    conn.commit()
                     n += 1
         return n
 
@@ -154,7 +183,7 @@ data:
                 time.sleep(5)
         else:
             print("DB never came up; exiting", flush=True); sys.exit(1)
-        print(f"loadgen up against {DB['host']}:{DB['port']}/{DB['dbname']}", flush=True)
+        print(f"loadgen up against {DB['host']}:{DB['port']}/{DB['dbname']} (scale={SCALE})", flush=True)
         while True:
             try:
                 n = run_round()

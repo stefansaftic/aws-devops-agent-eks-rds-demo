@@ -285,15 +285,16 @@ Resources:
             {
               "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
               "properties": {
-                "title": "EBS Read Ops/sec (smoking gun)",
+                "title": "EBS Total IOPS/min (smoking gun: combined R+W)",
                 "metrics": [
+                  ["AWS/EBS","VolumeWriteOps","VolumeId","${DataVolume}",{"stat":"Sum","period":60,"label":"Write ops/min"}],
                   ["AWS/EBS","VolumeReadOps","VolumeId","${DataVolume}",{"stat":"Sum","period":60,"label":"Read ops/min"}]
                 ],
-                "view": "timeSeries", "stacked": false, "region": "${AWS::Region}",
+                "view": "timeSeries", "stacked": true, "region": "${AWS::Region}",
                 "annotations": {
                   "horizontal": [
-                    {"label":"6000 IOPS ceiling","value":360000,"color":"#2ca02c"},
-                    {"label":"3000 IOPS ceiling","value":180000,"color":"#d62728"}
+                    {"label":"6000 IOPS ceiling (per-min sum)","value":360000,"color":"#2ca02c"},
+                    {"label":"3000 IOPS ceiling (per-min sum)","value":180000,"color":"#d62728"}
                   ]
                 }
               }
@@ -311,11 +312,12 @@ Resources:
             {
               "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
               "properties": {
-                "title": "EBS Read Bytes (throughput)",
+                "title": "EBS Bytes/min (read + write, stacked)",
                 "metrics": [
+                  ["AWS/EBS","VolumeWriteBytes","VolumeId","${DataVolume}",{"stat":"Sum","period":60}],
                   ["AWS/EBS","VolumeReadBytes","VolumeId","${DataVolume}",{"stat":"Sum","period":60}]
                 ],
-                "view": "timeSeries", "region": "${AWS::Region}"
+                "view": "timeSeries", "stacked": true, "region": "${AWS::Region}"
               }
             },
             {
