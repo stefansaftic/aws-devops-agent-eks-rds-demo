@@ -56,11 +56,15 @@ Parameters:
     NoEcho: true
   PgbenchScale:
     Type: Number
-    Default: 200
+    Default: 1500
     Description: |
-      pgbench scale factor (1 = ~16 MB). 200 = ~3 GB tables; large
-      enough that read-only pgbench saturates the gp3 baseline IOPS
-      ceiling once the workload becomes I/O-bound.
+      pgbench scale factor (1 = ~16 MB). 1500 = ~22 GB tables; chosen
+      so the working set exceeds m5.large's 8 GB RAM. That forces the
+      OS page cache to miss on cold reads, making the workload I/O-
+      bound and the gp3 IOPS ceiling visible in TPS.
+      Smaller scales (e.g. 200) fit entirely in OS page cache and
+      VolumeReadOps stays near zero -- the IOPS knob then has no
+      visible effect.
 
 Resources:
   # ----- IAM role for the instance -----
