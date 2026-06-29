@@ -90,12 +90,18 @@ Resources:
                 Resource: '*'
               # The cost-optimization scenario re-uploads modified
               # nested templates to the same template bucket the local
-              # deploy.sh uses.
+              # deploy.sh uses. Bucket name pattern (set in deploy.sh):
+              #   <stack-name>-templates-<account>-<region>
+              # The default stack name is devops-agent-demo. Allow on
+              # any bucket that matches the demo's naming convention,
+              # so an alternate stack name still works.
               - Effect: Allow
                 Action:
                   - s3:PutObject
                   - s3:GetObject
-                Resource: !Sub arn:aws:s3:::${GitHubRepo}*-templates-*/*
+                Resource:
+                  - !Sub arn:aws:s3:::devops-agent-demo-templates-${AWS::AccountId}-*/*
+                  - !Sub arn:aws:s3:::*-templates-${AWS::AccountId}-${AWS::Region}/*
               # CFN performs the IOPS/throughput change on the gp3 data
               # volume by calling ec2:ModifyVolume. Restrict to volumes
               # tagged for this project so the role can't fiddle with
