@@ -63,72 +63,89 @@ Resources:
               StringLike:
                 token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${GitHubRepo}:*
       Policies:
-        - PolicyName: DeployScenarioPermissions
+        # The workflow runs `kubectl apply` (via update-kubeconfig) +
+        # an `update-stack` on the parent CFN stack. The parent stack
+        # orchestrates VPC + EKS + RDS + FIS + EC2 nested stacks; CFN's
+        # update flow re-validates the full resource graph of every
+        # nested stack even when the actual diff is small, which means
+        # the role needs Describe-class access across every service the
+        # templates touch. Trying to enumerate the exact Describe calls
+        # CFN issues is a losing game (we hit DescribeAvailabilityZones,
+        # DescribeInternetGateways, DescribeVpcs in three separate
+        # rollback failures before going broad).
+        #
+        # The role is constrained by the OIDC trust policy to this one
+        # repo. Granting read-class actions broadly is fine. Writes are
+        # narrowed to the specific actions the demo's scenario PRs
+        # actually trigger.
+        - PolicyName: ReadAcrossStackedServices
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # Needed for `aws eks update-kubeconfig` and the EKS Access
-              # Entry lookup. kubectl auth itself is granted via the access
-              # entry created by setup-github-oidc.sh, not via IAM.
               - Effect: Allow
                 Action:
-                  - eks:DescribeCluster
-                  - eks:ListClusters
+                  - ec2:Describe*
+                  - ec2:GetSecurityGroupsForVpc
+                  - rds:Describe*
+                  - rds:ListTagsForResource
+                  - eks:Describe*
+                  - eks:List*
+                  - fis:Get*
+                  - fis:List*
+                  - iam:Get*
+                  - iam:List*
+                  - logs:Describe*
+                  - logs:GetLog*
+                  - logs:ListTagsForResource
+                  - cloudwatch:GetDashboard
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                  - ecr:Describe*
+                  - ecr:GetRepositoryPolicy
+                  - ecr:GetLifecyclePolicy
+                  - ecr:ListTagsForResource
+                  - sts:GetCallerIdentity
                 Resource: '*'
-              # The workflow describes the parent stack to find the RDS
-              # endpoint and EC2 IP, and update-stack on cfn/** changes
-              # for the cost-optimization scenario.
+              # AWS-owned SSM parameters CFN resolves at update time
+              # (the AmazonLinux 2023 AMI lookup in cfn/ec2-postgres).
               - Effect: Allow
                 Action:
-                  - cloudformation:DescribeStacks
-                  - cloudformation:DescribeStackEvents
-                  - cloudformation:DescribeStackResource
-                  - cloudformation:DescribeStackResources
-                  - cloudformation:GetTemplate
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}::parameter/aws/service/*
+        - PolicyName: WriteScopedToDemoActions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # The workflow re-uploads nested templates to the same
+              # template bucket deploy.sh uses, then drives a parent
+              # update-stack. Both operations need to be writes.
+              - Effect: Allow
+                Action:
                   - cloudformation:UpdateStack
                   - cloudformation:ValidateTemplate
+                  - cloudformation:Describe*
+                  - cloudformation:Get*
+                  - cloudformation:List*
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
                 Resource: '*'
-              # The cost-optimization scenario re-uploads modified
-              # nested templates to the same template bucket the local
-              # deploy.sh uses. Bucket name pattern (set in deploy.sh):
-              #   <stack-name>-templates-<account>-<region>
-              # The default stack name is devops-agent-demo. Allow on
-              # any bucket that matches the demo's naming convention,
-              # so an alternate stack name still works.
               - Effect: Allow
                 Action:
                   - s3:PutObject
                   - s3:GetObject
                 Resource:
-                  - !Sub arn:aws:s3:::devops-agent-demo-templates-${AWS::AccountId}-*/*
                   - !Sub arn:aws:s3:::*-templates-${AWS::AccountId}-${AWS::Region}/*
-              # ec2:ModifyVolume performs the IOPS/Throughput change
-              # the cost-optimization scenario depends on. ec2:Describe*
-              # is read-only and required because CFN re-validates the
-              # full Ec2PostgresStack resource graph on every update
-              # (the Instance resource references VpcId, the
-              # InstanceProfile references the IAM role, etc.) -- each
-              # validation issues its own Describe* call. Trying to
-              # enumerate them is a losing game; granting the read-only
-              # group is simpler and still account-scoped.
+              # The cost-optimization scenario flips the gp3 data
+              # volume's Iops/Throughput defaults. CFN issues this call.
               - Effect: Allow
                 Action:
-                  - ec2:Describe*
                   - ec2:ModifyVolume
                 Resource: '*'
-              # cfn/ec2-postgres.yaml resolves the AmazonLinux 2023 AMI
-              # via the public AWS-owned SSM parameter
-              # /aws/service/ami-amazon-linux-latest/* . CFN re-resolves
-              # this on every update-stack call, even when nothing else
-              # in the template body changed. Without this permission,
-              # any update on a stack that uses {{resolve:ssm:...}} for
-              # an AMI ref aborts immediately.
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameters
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}::parameter/aws/service/*
       Tags:
         - {Key: auto-delete, Value: never}
 
