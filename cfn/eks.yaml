@@ -277,6 +277,47 @@ Resources:
       Tags:
         - {Key: auto-delete, Value: never}
 
+  # ----- IRSA role for the EC2-Postgres load generator -----
+  # The loadgen Deployment in workload/ec2-loadgen.yaml runs read-only
+  # pgbench against the standalone EC2 Postgres and publishes TPS to
+  # CloudWatch. This role lets that ServiceAccount call PutMetricData.
+  Ec2PgLoadgenRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-ec2-pg-loadgen-role
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Federated": "${OidcArn}"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OidcUrl}:sub": "system:serviceaccount:api-demo:ec2-pg-loadgen",
+                    "${OidcUrl}:aud": "sts.amazonaws.com"
+                  }
+                }
+              }]
+            }
+          - OidcArn: !Ref OidcProvider
+            OidcUrl: !Select [1, !Split ['//', !GetAtt Cluster.OpenIdConnectIssuerUrl]]
+      Policies:
+        - PolicyName: PutMetricData
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: EksFailDemo/Pgbench
+      Tags:
+        - {Key: auto-delete, Value: never}
+
 Outputs:
   ClusterName:
     Value: !Ref Cluster
@@ -294,5 +335,7 @@ Outputs:
     Value: !GetAtt EbsCsiRole.Arn
   EbsCsiRoleName:
     Value: !Ref EbsCsiRole
+  Ec2PgLoadgenRoleArn:
+    Value: !GetAtt Ec2PgLoadgenRole.Arn
   OidcIssuerUrl:
     Value: !GetAtt Cluster.OpenIdConnectIssuerUrl

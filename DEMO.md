@@ -137,9 +137,16 @@ What you'd say while running these:
 
 ## 2. Pick a failure flavour
 
-Three flavours, increasing complexity. **For a 20-minute slot, pick
-one — Flavour C is the strongest narrative.** For a longer demo, chain
-A → B → C.
+Four flavours, increasing complexity. **For a 20-minute slot, pick
+one — Flavour C or D is the strongest narrative.** For a longer demo,
+chain A → B → C → D.
+
+| Flavour | Where the failure lives | Where the agent has to look |
+|---|---|---|
+| A — FIS | AWS infrastructure (subnets, EBS, IAM throttle) | k8s events + CloudWatch + FIS API |
+| B — Manual scripts | RDS config | Pod logs + RDS describe |
+| C — Bad PR | k8s manifest in `workload/` | Pod state + Deployment annotations + git history |
+| D — Cost-opt PR | CloudFormation template in `cfn/` | EBS metrics + volume modifications + CFN tags + git history |
 
 ### Flavour A — Infrastructure outage (FIS experiment)
 
@@ -325,6 +332,160 @@ This is the demo's main act because it shows the agent BRIDGING
 CLUSTER STATE TO GIT HISTORY — the actual hard part of being on-call.
 ```
 
+### Flavour D — Cost-optimization PR causes EBS brownout
+
+Different shape from C: the failure is **outside Kubernetes**. A
+standalone EC2 Postgres serves a steady workload; a PR drops the gp3
+volume's provisioned IOPS from 6000 to 3000 (the default) "to save
+money." The workload becomes I/O-bound and TPS halves. Service stays
+up — it just gets slow. The agent has to read CloudWatch metrics on
+the EBS volume, find the IOPS ceiling, and trace it to the PR that
+applied via CloudFormation.
+
+Show the baseline before merging anything. EC2 Postgres details:
+
+```bash
+aws cloudformation describe-stacks --region us-east-1 \
+  --stack-name devops-agent-demo \
+  --query "Stacks[0].Outputs[?starts_with(OutputKey, 'Ec2Postgres')]" \
+  --output table
+```
+
+Open the dashboard URL from that output in a browser, or grab it
+directly:
+
+```bash
+aws cloudformation describe-stacks --region us-east-1 \
+  --stack-name devops-agent-demo \
+  --query "Stacks[0].Outputs[?OutputKey=='Ec2PostgresDashboardUrl'].OutputValue" \
+  --output text
+```
+
+Confirm the loadgen is producing TPS (the smoking-gun custom metric):
+
+```bash
+kubectl logs -n api-demo -l app=ec2-pg-loadgen --tail=5
+```
+
+Snapshot baseline VolumeReadOps from CloudWatch (we'll re-run this
+after the merge to compare):
+
+```bash
+VOL=$(aws cloudformation describe-stacks --region us-east-1 \
+  --stack-name devops-agent-demo \
+  --query "Stacks[0].Outputs[?OutputKey=='Ec2PostgresDataVolumeId'].OutputValue" \
+  --output text)
+echo "Data volume: $VOL"
+aws ec2 describe-volumes --region us-east-1 --volume-ids "$VOL" \
+  --query 'Volumes[0].[VolumeType,Iops,Throughput]' --output text
+```
+
+```text
+Steps in the GitHub UI (do this in the browser):
+
+1. Open https://github.com/stefansaftic/aws-devops-agent-eks-rds-demo/compare/deploy...scenario/cost-optimization
+2. Click "Create pull request"
+3. CRUCIAL: change the base branch dropdown from `main` to `deploy`.
+4. Click "Merge pull request" → confirm.
+5. Watch the Actions tab — the CFN-update step takes 2-4 min while
+   AWS modifies the gp3 volume in place.
+```
+
+Wait ~3 min, then re-check the volume — Iops should be 3000:
+
+```bash
+aws ec2 describe-volumes --region us-east-1 --volume-ids "$VOL" \
+  --query 'Volumes[0].[VolumeType,Iops,Throughput]' --output text
+aws ec2 describe-volumes-modifications --region us-east-1 --volume-ids "$VOL" \
+  --query 'VolumesModifications[].[StartTime,ModificationState,TargetIops,TargetThroughput]' \
+  --output table
+```
+
+Watch pgbench TPS plummet:
+
+```bash
+kubectl logs -n api-demo -l app=ec2-pg-loadgen --tail=10
+```
+
+Pull the new TPS curve from CloudWatch (the 1-minute bins around the
+modification time should show the cliff):
+
+```bash
+aws cloudwatch get-metric-statistics --region us-east-1 \
+  --namespace EksFailDemo/Pgbench --metric-name Tps \
+  --dimensions Name=Target,Value=ec2-postgres \
+  --start-time "$(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ')" \
+  --end-time   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  --period 60 --statistics Average \
+  --query 'sort_by(Datapoints,&Timestamp)[*].[Timestamp,Average]' --output table
+```
+
+Same shape, but for `VolumeReadOps` (the AWS-side ceiling):
+
+```bash
+aws cloudwatch get-metric-statistics --region us-east-1 \
+  --namespace AWS/EBS --metric-name VolumeReadOps \
+  --dimensions Name=VolumeId,Value="$VOL" \
+  --start-time "$(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ')" \
+  --end-time   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  --period 60 --statistics Sum \
+  --query 'sort_by(Datapoints,&Timestamp)[*].[Timestamp,Sum]' --output table
+```
+
+VolumeQueueLength rising past 1 confirms throttling rather than just a
+workload change:
+
+```bash
+aws cloudwatch get-metric-statistics --region us-east-1 \
+  --namespace AWS/EBS --metric-name VolumeQueueLength \
+  --dimensions Name=VolumeId,Value="$VOL" \
+  --start-time "$(date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ')" \
+  --end-time   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  --period 60 --statistics Average \
+  --query 'sort_by(Datapoints,&Timestamp)[*].[Timestamp,Average]' --output table
+```
+
+Inspect the parent stack's `last-deploy-*` tags — these are stamped by
+the CFN-update step in the workflow and link the modification to a
+specific PR:
+
+```bash
+aws cloudformation describe-stacks --region us-east-1 \
+  --stack-name devops-agent-demo \
+  --query "Stacks[0].Tags[?starts_with(Key, 'last-deploy-')]" --output table
+NESTED=$(aws cloudformation describe-stack-resource --region us-east-1 \
+  --stack-name devops-agent-demo --logical-resource-id Ec2PostgresStack \
+  --query "StackResourceDetail.PhysicalResourceId" --output text)
+aws cloudformation describe-stacks --region us-east-1 \
+  --stack-name "$NESTED" \
+  --query "Stacks[0].Tags[?starts_with(Key, 'last-deploy-')]" --output table
+```
+
+```text
+Hand off to the agent:
+
+  "Our standalone Postgres on EC2 (instance tagged Name=devops-agent-
+   demo-ec2-pg) has gotten slow this afternoon. The host is up and
+   the service is responding. Find what's wrong."
+
+Investigation chain:
+  1. ec2 describe-instances + ssm session manager / status checks  →  host is fine
+  2. CloudWatch dashboard or get-metric-statistics on AWS/EBS for
+     the data volume  →  VolumeReadOps cliff at ~T-3 min, plateau at
+                          a flat ~3000 ops/sec; VolumeQueueLength > 1
+  3. ec2 describe-volumes  →  Iops: 3000 (down from 6000)
+  4. ec2 describe-volumes-modifications  →  StartTime ≈ T-3 min,
+     TargetIops 3000
+  5. cloudformation describe-stacks on the volume's stack  →
+     Tags include last-deploy-sha / -ref / -gha-run pointing at the
+     scenario/cost-optimization PR
+  6. Open the PR diff: gp3 volume's `Iops: 6000` and `Throughput: 250`
+     properties were removed
+  7. Root cause: PR dropped provisioned IOPS to the gp3 baseline,
+     workload is now read-IOPS bound, TPS halved
+  8. Fix: revert (re-add Iops: 6000) or right-size to actual demand
+```
+
 ---
 
 ## 3. Recovery
@@ -373,6 +534,34 @@ Confirm recovery:
 ```bash
 kubectl get pods -n api-demo -o wide
 kubectl logs -n api-demo -l app=api-loadgen --tail=10
+```
+
+### After Flavour D (Cost-optimization PR)
+
+`reset-deploy.sh` already re-runs the workflow, which re-uploads the
+clean `cfn/ec2-postgres.yaml` and triggers a nested-stack update. CFN
+modifies the gp3 volume back to 6000 IOPS / 250 MB/s. Takes 2-4 min.
+
+```bash
+./scripts/reset-deploy.sh
+```
+
+Watch the volume modification finish:
+
+```bash
+VOL=$(aws cloudformation describe-stacks --region us-east-1 \
+  --stack-name devops-agent-demo \
+  --query "Stacks[0].Outputs[?OutputKey=='Ec2PostgresDataVolumeId'].OutputValue" \
+  --output text)
+aws ec2 describe-volumes-modifications --region us-east-1 --volume-ids "$VOL" \
+  --query 'VolumesModifications[].[StartTime,ModificationState,TargetIops]' \
+  --output table
+```
+
+Confirm pgbench TPS recovers in the loadgen logs:
+
+```bash
+kubectl logs -n api-demo -l app=ec2-pg-loadgen --tail=10
 ```
 
 ---

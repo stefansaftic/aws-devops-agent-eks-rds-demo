@@ -75,11 +75,36 @@ Resources:
                   - eks:DescribeCluster
                   - eks:ListClusters
                 Resource: '*'
-              # deploy-rds.sh reads the RDS endpoint from the parent stack
-              # output before patching it into the K8s Secret.
+              # The workflow describes the parent stack to find the RDS
+              # endpoint and EC2 IP, and update-stack on cfn/** changes
+              # for the cost-optimization scenario.
               - Effect: Allow
                 Action:
                   - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:UpdateStack
+                  - cloudformation:ValidateTemplate
+                Resource: '*'
+              # The cost-optimization scenario re-uploads modified
+              # nested templates to the same template bucket the local
+              # deploy.sh uses.
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${GitHubRepo}*-templates-*/*
+              # CFN performs the IOPS/throughput change on the gp3 data
+              # volume by calling ec2:ModifyVolume. Restrict to volumes
+              # tagged for this project so the role can't fiddle with
+              # arbitrary EBS volumes.
+              - Effect: Allow
+                Action:
+                  - ec2:ModifyVolume
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeVolumesModifications
                 Resource: '*'
       Tags:
         - {Key: auto-delete, Value: never}

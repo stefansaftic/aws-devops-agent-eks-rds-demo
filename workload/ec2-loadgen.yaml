@@ -1,0 +1,171 @@
+---
+# Load generator for the standalone EC2 Postgres (the cost-optimization
+# scenario's target). Runs read-only pgbench-shaped SELECTs in a tight
+# loop, measures completed transactions per second, and publishes TPS
+# to CloudWatch as EksFailDemo/Pgbench:Tps so the dashboard widget
+# (defined in cfn/ec2-postgres.yaml) plots the cliff at PR merge time.
+#
+# Deployed by deploy-rds.sh after the parent stack is up; the EC2 IP
+# comes from the CloudFormation output and is patched into the Secret.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ec2-pg-credentials
+  namespace: api-demo
+type: Opaque
+stringData:
+  DB_HOST: "PLACEHOLDER_EC2_IP"
+  DB_PORT: "5432"
+  DB_NAME: "pgbench"
+  DB_USER: "pgbench"
+  DB_PASSWORD: "PgbenchDemo2026!"
+  AWS_REGION: "us-east-1"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ec2-pg-loadgen
+  namespace: api-demo
+  # Annotation set imperatively after deploy because the IRSA role ARN
+  # is a CloudFormation output.
+  annotations:
+    eks.amazonaws.com/role-arn: "PLACEHOLDER_LOADGEN_ROLE_ARN"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ec2-pg-loadgen
+  namespace: api-demo
+  labels:
+    app: ec2-pg-loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ec2-pg-loadgen}
+  template:
+    metadata:
+      labels: {app: ec2-pg-loadgen}
+    spec:
+      serviceAccountName: ec2-pg-loadgen
+      containers:
+        - name: loadgen
+          image: __ECR_PREFIX__/docker/library/python:3.12-slim
+          command: [python, /app/loadgen.py]
+          env:
+            - {name: DB_HOST,     valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: DB_HOST}}}
+            - {name: DB_PORT,     valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: DB_PORT}}}
+            - {name: DB_NAME,     valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: DB_NAME}}}
+            - {name: DB_USER,     valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: DB_USER}}}
+            - {name: DB_PASSWORD, valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: DB_PASSWORD}}}
+            - {name: AWS_REGION,  valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: AWS_REGION}}}
+            - {name: AWS_DEFAULT_REGION, valueFrom: {secretKeyRef: {name: ec2-pg-credentials, key: AWS_REGION}}}
+          volumeMounts:
+            - {name: app-code, mountPath: /app}
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits:   {cpu: 1,    memory: 512Mi}
+      volumes:
+        - name: app-code
+          configMap: {name: ec2-pg-loadgen-code}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ec2-pg-loadgen-code
+  namespace: api-demo
+data:
+  loadgen.py: |
+    """Continuous read-only Postgres workload + CloudWatch TPS publisher.
+
+    Runs a tight loop of indexed SELECTs against the pgbench tables on
+    the EC2 Postgres instance. Measures transactions completed per
+    minute and publishes the rate as EksFailDemo/Pgbench:Tps with
+    Target=ec2-postgres so the CloudWatch dashboard plots it.
+
+    The query mix mirrors `pgbench -S` (SELECT-only): a single primary-
+    key lookup against pgbench_accounts. With scale=200 the table is
+    ~3 GB and most lookups hit cold pages once shared_buffers warms;
+    that's what makes the workload IOPS-bound rather than cache-bound.
+    """
+    import os, random, sys, time
+    import subprocess
+
+    # NAT is available -> install runtime deps (psycopg2 needs libpq +
+    # build tools, but psycopg2-binary ships compiled wheels).
+    for pkg in ("psycopg2-binary==2.9.9", "boto3==1.35.36"):
+        try:
+            __import__(pkg.split("==")[0].replace("-binary",""))
+        except ImportError:
+            subprocess.check_call([sys.executable,"-m","pip","install","-q",pkg])
+
+    import psycopg2
+    import boto3
+
+    DB = dict(
+        host=os.environ["DB_HOST"], port=int(os.environ.get("DB_PORT","5432")),
+        dbname=os.environ["DB_NAME"], user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"], connect_timeout=5,
+    )
+    NACCOUNTS = 200 * 100_000   # pgbench scale 200
+    REGION = os.environ.get("AWS_REGION","us-east-1")
+
+    cw = boto3.client("cloudwatch", region_name=REGION)
+
+    def run_round():
+        """One ~60s round. Returns transactions completed in the round."""
+        deadline = time.time() + 60
+        n = 0
+        with psycopg2.connect(**DB) as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                while time.time() < deadline:
+                    aid = random.randint(1, NACCOUNTS)
+                    cur.execute("SELECT abalance FROM pgbench_accounts WHERE aid = %s", (aid,))
+                    cur.fetchone()
+                    n += 1
+        return n
+
+    def publish(tps):
+        try:
+            cw.put_metric_data(
+                Namespace="EksFailDemo/Pgbench",
+                MetricData=[{
+                    "MetricName":"Tps",
+                    "Dimensions":[{"Name":"Target","Value":"ec2-postgres"}],
+                    "Value": float(tps), "Unit":"Count/Second",
+                }],
+            )
+        except Exception as e:
+            print(f"cloudwatch put_metric_data failed: {e}", flush=True)
+
+    def main():
+        # Wait for the DB to be reachable -- gives the EC2 instance time
+        # to come up after a CFN stack update replaces it.
+        for attempt in range(30):
+            try:
+                psycopg2.connect(**DB).close()
+                break
+            except Exception as e:
+                print(f"DB not reachable yet ({attempt+1}/30): {e}", flush=True)
+                time.sleep(5)
+        else:
+            print("DB never came up; exiting", flush=True); sys.exit(1)
+        print(f"loadgen up against {DB['host']}:{DB['port']}/{DB['dbname']}", flush=True)
+        while True:
+            try:
+                n = run_round()
+                tps = n / 60.0
+                print(f"tps={tps:.1f} ({n} txn in 60s)", flush=True)
+                publish(tps)
+            except Exception as e:
+                # On disconnects (e.g. when the EC2 is being replaced)
+                # log, sleep briefly, and reconnect on the next round.
+                print(f"round failed: {e}", flush=True)
+                time.sleep(5)
+
+    if __name__ == "__main__":
+        main()

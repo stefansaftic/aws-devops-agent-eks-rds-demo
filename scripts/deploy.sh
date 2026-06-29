@@ -36,6 +36,7 @@ aws s3 cp "$ROOT/cfn/vpc.yaml" "s3://${BUCKET}/${PREFIX}/vpc.yaml" --region "$RE
 aws s3 cp "$ROOT/cfn/eks.yaml" "s3://${BUCKET}/${PREFIX}/eks.yaml" --region "$REGION"
 aws s3 cp "$ROOT/cfn/fis.yaml" "s3://${BUCKET}/${PREFIX}/fis.yaml" --region "$REGION"
 aws s3 cp "$ROOT/cfn/rds.yaml" "s3://${BUCKET}/${PREFIX}/rds.yaml" --region "$REGION"
+aws s3 cp "$ROOT/cfn/ec2-postgres.yaml" "s3://${BUCKET}/${PREFIX}/ec2-postgres.yaml" --region "$REGION"
 
 # Only one ecr-public pull-through cache rule can exist per account, and
 # PullThroughCacheRule is not importable. Detect a pre-existing rule and

@@ -105,3 +105,92 @@ jobs:
           kubectl rollout status deployment/api-server -n api-demo --timeout=90s || true
           kubectl get pods -n api-demo -o wide
           kubectl describe deployment/api-server -n api-demo | tail -40
+
+      # ----- CFN updates (cost-optimization scenario) -----
+      # If the branch changes anything under cfn/**, re-upload the
+      # nested templates to the existing template bucket and run
+      # cloudformation update-stack on the parent. The scenario branch
+      # for this is `scenario/cost-optimization` which drops the gp3
+      # data volume's Iops and Throughput properties.
+      - name: Detect CFN changes
+        id: cfn-detect
+        run: |
+          # Compare against deploy's previous tip; if that's missing
+          # (first run, force-push), fall back to the parent commit.
+          BEFORE="${{ github.event.before }}"
+          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            BEFORE=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          CHANGED=$(git diff --name-only "$BEFORE" HEAD -- cfn/ || true)
+          echo "changed<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGED"     >> "$GITHUB_OUTPUT"
+          echo "EOF"          >> "$GITHUB_OUTPUT"
+          if [[ -n "$CHANGED" ]]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Changed CFN files:"; echo "$CHANGED"
+
+      - name: Apply CFN update
+        if: steps.cfn-detect.outputs.any == 'true'
+        run: |
+          set -euo pipefail
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          BUCKET="${STACK_NAME}-templates-${ACCOUNT}-${AWS_REGION}"
+          PREFIX="${STACK_NAME}"
+          echo "==> Re-uploading nested templates to s3://${BUCKET}/${PREFIX}/"
+          aws s3 cp cfn/ec2-postgres.yaml "s3://${BUCKET}/${PREFIX}/ec2-postgres.yaml"
+          aws s3 cp cfn/eks.yaml          "s3://${BUCKET}/${PREFIX}/eks.yaml"
+          aws s3 cp cfn/rds.yaml          "s3://${BUCKET}/${PREFIX}/rds.yaml"
+          aws s3 cp cfn/fis.yaml          "s3://${BUCKET}/${PREFIX}/fis.yaml"
+          aws s3 cp cfn/vpc.yaml          "s3://${BUCKET}/${PREFIX}/vpc.yaml"
+
+          # CFN won't re-fetch a nested stack's TemplateURL just because
+          # the S3 object behind it changed. We have to update the
+          # nested stack directly, passing the (same) URL as
+          # --template-url so CFN re-reads the body and diffs against
+          # the deployed state. That's how the gp3 IOPS/Throughput
+          # change in cfn/ec2-postgres.yaml actually reaches AWS.
+          NESTED_ARN=$(aws cloudformation describe-stack-resource \
+            --stack-name "${STACK_NAME}" \
+            --logical-resource-id Ec2PostgresStack \
+            --query "StackResourceDetail.PhysicalResourceId" --output text)
+          echo "==> Updating nested stack: $NESTED_ARN"
+          aws cloudformation update-stack \
+            --stack-name "$NESTED_ARN" \
+            --template-url "https://${BUCKET}.s3.amazonaws.com/${PREFIX}/ec2-postgres.yaml" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameters \
+                ParameterKey=ProjectName,UsePreviousValue=true \
+                ParameterKey=VpcId,UsePreviousValue=true \
+                ParameterKey=VpcCidr,UsePreviousValue=true \
+                ParameterKey=PrivateSubnetA,UsePreviousValue=true \
+                ParameterKey=InstanceType,UsePreviousValue=true \
+                ParameterKey=DataVolumeSize,UsePreviousValue=true \
+                ParameterKey=DataVolumeIops,UsePreviousValue=true \
+                ParameterKey=DataVolumeThroughput,UsePreviousValue=true \
+                ParameterKey=DbName,UsePreviousValue=true \
+                ParameterKey=DbUser,UsePreviousValue=true \
+                ParameterKey=DbPassword,UsePreviousValue=true \
+                ParameterKey=PgbenchScale,UsePreviousValue=true \
+            --tags \
+                Key=last-deploy-sha,Value=${{ github.sha }} \
+                Key=last-deploy-ref,Value=${{ github.ref_name }} \
+                Key=last-deploy-gha-run,Value=${{ github.run_id }} \
+                Key=auto-delete,Value=never \
+            2>&1 | tee /tmp/upd-nested.log || {
+              # "No updates are to be performed" is fine -- means the
+              # branch's cfn/** changes don't actually affect this
+              # stack (e.g. only vpc.yaml was edited).
+              if grep -q "No updates are to be performed" /tmp/upd-nested.log; then
+                echo "==> No updates needed for Ec2PostgresStack"
+                exit 0
+              fi
+              exit 1
+            }
+
+          echo "==> Waiting for the nested stack to settle"
+          aws cloudformation wait stack-update-complete \
+            --stack-name "$NESTED_ARN" || \
+            echo "    (wait timed out -- CFN still finishing async)"

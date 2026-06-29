@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: EKS-FAIL-DEMO - Parent stack orchestrating VPC + EKS + FIS + RDS
+Description: EKS-FAIL-DEMO - Parent stack orchestrating VPC + EKS + FIS + RDS + Ec2Postgres
 
 Parameters:
   ProjectName:
@@ -7,7 +7,7 @@ Parameters:
     Default: devops-agent-demo
   TemplateBucket:
     Type: String
-    Description: S3 bucket containing nested templates (vpc.yaml, eks.yaml, fis.yaml, rds.yaml)
+    Description: S3 bucket containing nested templates (vpc.yaml, eks.yaml, fis.yaml, rds.yaml, ec2-postgres.yaml)
   TemplatePrefix:
     Type: String
     Default: devops-agent-demo
@@ -25,6 +25,15 @@ Parameters:
     Description: |
       Set to 'false' if an ecr-public pull-through cache rule already exists.
       deploy.sh detects this automatically.
+  Ec2PostgresInstanceType:
+    Type: String
+    Default: m5.large
+  Ec2PostgresDataVolumeIops:
+    Type: Number
+    Default: 6000
+  Ec2PostgresDataVolumeThroughput:
+    Type: Number
+    Default: 250
 
 Resources:
   VpcStack:
@@ -72,6 +81,20 @@ Resources:
         VpcCidr: !GetAtt VpcStack.Outputs.VpcCidr
         PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
 
+  Ec2PostgresStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.amazonaws.com/${TemplatePrefix}/ec2-postgres.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        VpcCidr: !GetAtt VpcStack.Outputs.VpcCidr
+        PrivateSubnetA: !GetAtt VpcStack.Outputs.PrivateSubnetA
+        InstanceType: !Ref Ec2PostgresInstanceType
+        DataVolumeIops: !Ref Ec2PostgresDataVolumeIops
+        DataVolumeThroughput: !Ref Ec2PostgresDataVolumeThroughput
+
 Outputs:
   ClusterName:
     Value: !GetAtt EksStack.Outputs.ClusterName
@@ -101,3 +124,13 @@ Outputs:
     Value: !GetAtt RdsStack.Outputs.RdsSecurityGroupId
   RdsInstanceId:
     Value: !GetAtt RdsStack.Outputs.RdsInstanceId
+  Ec2PostgresInstanceId:
+    Value: !GetAtt Ec2PostgresStack.Outputs.Ec2InstanceId
+  Ec2PostgresPrivateIp:
+    Value: !GetAtt Ec2PostgresStack.Outputs.Ec2PrivateIp
+  Ec2PostgresDataVolumeId:
+    Value: !GetAtt Ec2PostgresStack.Outputs.DataVolumeId
+  Ec2PostgresDashboardUrl:
+    Value: !GetAtt Ec2PostgresStack.Outputs.DashboardUrl
+  Ec2PgLoadgenRoleArn:
+    Value: !GetAtt EksStack.Outputs.Ec2PgLoadgenRoleArn

@@ -39,9 +39,32 @@ kubectl rollout status deployment/api-server -n api-demo --timeout=180s
 echo "==> Applying API load generator..."
 kubectl apply -f "${WORKLOAD_DIR}/api-loadgen.yaml"
 
+# ----- ec2-postgres load generator (cost-optimization scenario) -----
+echo "==> Fetching EC2 Postgres details from CloudFormation..."
+EC2_IP=$(aws cloudformation describe-stacks \
+  --stack-name "${STACK_NAME}" --region "${REGION}" \
+  --query "Stacks[0].Outputs[?OutputKey=='Ec2PostgresPrivateIp'].OutputValue" \
+  --output text)
+LOADGEN_ROLE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name "${STACK_NAME}" --region "${REGION}" \
+  --query "Stacks[0].Outputs[?OutputKey=='Ec2PgLoadgenRoleArn'].OutputValue" \
+  --output text)
+
+if [[ -n "$EC2_IP" && "$EC2_IP" != "None" && -n "$LOADGEN_ROLE_ARN" && "$LOADGEN_ROLE_ARN" != "None" ]]; then
+  echo "==> EC2 Postgres: ${EC2_IP}  loadgen role: ${LOADGEN_ROLE_ARN}"
+  echo "==> Applying ec2-postgres load generator..."
+  sed -e "s|PLACEHOLDER_EC2_IP|${EC2_IP}|g" \
+      -e "s|PLACEHOLDER_LOADGEN_ROLE_ARN|${LOADGEN_ROLE_ARN}|g" \
+      -e "s|__ECR_PREFIX__|${ECR_PREFIX}|g" \
+      "${WORKLOAD_DIR}/ec2-loadgen.yaml" | kubectl apply -f -
+else
+  echo "==> EC2 Postgres outputs not found — skipping ec2-loadgen (older stack?)"
+fi
+
 echo ""
-echo "API app deployed. Load generator running."
-echo "   RDS Endpoint: ${RDS_ENDPOINT}"
+echo "API app deployed. Load generators running."
+echo "   RDS Endpoint:    ${RDS_ENDPOINT}"
+echo "   EC2 Postgres IP: ${EC2_IP:-<not deployed>}"
 echo ""
 echo "Test:"
 echo "  kubectl port-forward svc/api-server -n api-demo 8080:80"
