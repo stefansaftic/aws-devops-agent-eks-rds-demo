@@ -102,19 +102,19 @@ Resources:
                 Resource:
                   - !Sub arn:aws:s3:::devops-agent-demo-templates-${AWS::AccountId}-*/*
                   - !Sub arn:aws:s3:::*-templates-${AWS::AccountId}-${AWS::Region}/*
-              # CFN performs the IOPS/throughput change via
-              # ec2:ModifyVolume. The workflow does NOT pass
-              # stack-level --tags on update-stack -- doing so
-              # propagates tags to every taggable resource under the
-              # stack and would require ec2:CreateTags + Describe on
-              # the entire VPC topology. We instead correlate PRs to
-              # changes via cloudformation:describe-stack-events +
-              # describe-volumes-modifications timestamps.
+              # ec2:ModifyVolume performs the IOPS/Throughput change
+              # the cost-optimization scenario depends on. ec2:Describe*
+              # is read-only and required because CFN re-validates the
+              # full Ec2PostgresStack resource graph on every update
+              # (the Instance resource references VpcId, the
+              # InstanceProfile references the IAM role, etc.) -- each
+              # validation issues its own Describe* call. Trying to
+              # enumerate them is a losing game; granting the read-only
+              # group is simpler and still account-scoped.
               - Effect: Allow
                 Action:
+                  - ec2:Describe*
                   - ec2:ModifyVolume
-                  - ec2:DescribeVolumes
-                  - ec2:DescribeVolumesModifications
                 Resource: '*'
               # cfn/ec2-postgres.yaml resolves the AmazonLinux 2023 AMI
               # via the public AWS-owned SSM parameter
