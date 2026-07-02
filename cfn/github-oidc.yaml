@@ -151,6 +151,15 @@ Resources:
                 Action:
                   - ec2:ModifyVolume
                 Resource: '*'
+              # If CFN ever needs to replace the EC2 Instance (e.g.
+              # because the SSM-resolved AMI drifted), it calls
+              # iam:PassRole on the InstanceRole. Restrict to the
+              # project's own instance roles only.
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/devops-agent-demo-*-InstanceRole-*
               # cfn/ec2-postgres.yaml owns the CloudWatch dashboard
               # the demo uses. CFN re-applies it on every update.
               - Effect: Allow

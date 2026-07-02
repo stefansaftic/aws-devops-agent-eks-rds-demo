@@ -29,6 +29,18 @@ Parameters:
     Type: Number
     Default: 50
     Description: Size of the Postgres data volume in GiB.
+  ImageId:
+    Type: AWS::EC2::Image::Id
+    # Default is the AmazonLinux 2023 AMI captured at the time the
+    # stack was first deployed. Passing an explicit ID rather than
+    # {{resolve:ssm:/aws/service/ami-amazon-linux-latest/...}} means
+    # CFN doesn't try to REPLACE the instance every time AWS publishes
+    # a new AmazonLinux release. That's important because instance
+    # replacement drops the OS-side Postgres state (initdb happens in
+    # UserData; a replaced instance won't re-init when /data has
+    # existing pgdata).
+    Default: ami-00948338a4aeec604
+    Description: EC2 AMI ID. Pin this to prevent instance replacement on updates.
   DataVolumeIops:
     Type: Number
     Default: 6000
@@ -146,7 +158,7 @@ Resources:
     Metadata:
       Comment: Postgres + pgbench (scale 200), data on /data (separate gp3 volume)
     Properties:
-      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      ImageId: !Ref ImageId
       InstanceType: !Ref InstanceType
       SubnetId: !Ref PrivateSubnetA
       SecurityGroupIds: [!Ref InstanceSecurityGroup]
