@@ -146,6 +146,13 @@ Resources:
                 Action:
                   - ec2:ModifyVolume
                 Resource: '*'
+              # cfn/ec2-postgres.yaml owns the CloudWatch dashboard
+              # the demo uses. CFN re-applies it on every update.
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutDashboard
+                  - cloudwatch:DeleteDashboards
+                Resource: '*'
       Tags:
         - {Key: auto-delete, Value: never}
 
