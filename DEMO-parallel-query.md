@@ -1,21 +1,25 @@
 # Parallel-query scenario — short runbook
 
 A performance PR "parallelises `/query`" — the handler is refactored
-to fan out four concurrent SELECTs against RDS instead of one serial
-one. Each shard opens its own psycopg2 connection. Reads like a
-straightforward latency optimisation (and it does cut per-request p50
-latency).
+to fan out 20 concurrent single-row SELECTs against RDS instead of
+one serial `LIMIT 10`. Each shard opens its own psycopg2 connection
+and computes an `md5(payload || repeat(payload, 200))` "row hash for
+cache invalidation." Reads like a straightforward analytics
+enrichment refactor.
 
-The catch: connection load per `/query` call goes from 1 to 4. With
-3 api-server pods × 3 loadgen replicas hammering `/query` at ~15
-req/sec each, the RDS `db.t3.micro` (max_connections ~87) fills up
-and starts refusing new connections. The api-server itself looks
-healthy — CPU is fine, no restarts, `/health` is 200 — but `/query`
-starts returning 500s intermittently.
+The catch: every `/query` request now opens 20 connections and does
+CPU-heavy hashing per row. Under the loadgen's steady traffic:
+- **RDS DatabaseConnections** climbs from ~1-2 sustained to ~15-30
+- **RDS CPUUtilization** climbs from ~18% to ~50-80%
+- **RDS ReadIOPS** climbs (each shard is a fresh SELECT with sort)
+- api-server pod CPU is roughly unchanged — the CPU pressure lands
+  on RDS, not on the pods
+- `/query` latency actually gets *worse*, not better, once RDS is
+  saturated
 
-The agent's job: figure out that neither the pod nor the DB is the
-problem in isolation — it's the *connection multiplication* the PR
-introduced.
+The agent's job: recognise that neither the pod nor the DB is the
+problem in isolation — it's the *connection + CPU multiplication*
+the PR introduced.
 
 Open this file in [markdowner](../markdowner/) and click ▶ Run on
 each `bash` cell in order.
@@ -106,9 +110,10 @@ In the GitHub UI (do this in the browser — not a Run block):
 ```
 
 The PR diff on `workload/api-app.yaml` moves the `/query` handler
-from one serial SELECT to four concurrent ones via
-`ThreadPoolExecutor(max_workers=4)`, each opening its own
-`psycopg2.connect()`. Reads like a good latency optimisation.
+from one serial `LIMIT 10` SELECT to 20 concurrent single-row
+shards via `ThreadPoolExecutor(max_workers=20)`, each opening its
+own `psycopg2.connect()` and computing an `md5(...)` row hash.
+Reads like a good latency optimisation with an analytics enrichment.
 
 ---
 
@@ -121,8 +126,8 @@ FAILs on `/query` (`/health` and `/write` still succeed):
 kubectl logs -n api-demo -l app=api-loadgen --tail=40 | grep -E 'query|health|write' | tail -30
 ```
 
-Sample DatabaseConnections — the number should have jumped roughly
-4x compared to baseline (~20-40 sustained instead of ~5):
+Sample DatabaseConnections — the number should be ~10-20x baseline
+(~15-30 sustained instead of ~1-2):
 
 ```bash
 aws cloudwatch get-metric-statistics --region us-east-1 \
@@ -170,13 +175,14 @@ kubectl get deploy api-server -n api-demo -o yaml | grep -A3 'annotations:' | he
 
 On the **api-rds dashboard**:
 
-- **DatabaseConnections**: sustained ~20-40 instead of ~5 (4x jump)
-- **RDS CPU**: elevated (~30-50%)
-- **RDS Read Latency**: climbs — each `/query` call blocks on 4
-  serial `psycopg2.connect()` handshakes when the pool is exhausted
+- **DatabaseConnections**: sustained ~15-30 instead of ~1-2 (10-20x jump)
+- **RDS CPU**: climbs from ~18% to ~50-80%
+- **RDS ReadIOPS**: climbs meaningfully (each shard is a fresh
+  SELECT with sort against the events table)
+- **RDS Read Latency**: climbs as CPU saturates
 - **api-server pod CPU / restarts / running pods**: unchanged —
-  the pods themselves are fine. That's what makes the diagnosis
-  interesting.
+  the pods themselves are fine. The load moved from api-server to
+  RDS. That's what makes the diagnosis interesting.
 
 ---
 
@@ -214,21 +220,25 @@ Investigation chain the agent should follow:
                                                     eks-fail-demo/git-ref
                                                     eks-fail-demo/gha-run
   6. Open the PR / commit on GitHub. Diff:
-        /query switched from one SELECT to four concurrent SELECTs
-        via ThreadPoolExecutor(max_workers=4), each opening its own
-        psycopg2 connection.
-  7. Root cause: the parallelisation quadrupled connection load per
-     /query request. With 3 api-server pods × 3 loadgen replicas ×
-     ~15 req/sec, /query alone drives ~180 concurrent connections
-     against a max_connections of ~87.
+        /query switched from one serial LIMIT 10 SELECT to 20
+        concurrent single-row shards via
+        ThreadPoolExecutor(max_workers=20), each opening its own
+        psycopg2 connection AND computing md5(payload || repeat(
+        payload, 200)) as a "row hash for cache invalidation."
+  7. Root cause: the parallelisation multiplied both connection
+     load AND per-row CPU work by 20x. Every /query call now opens
+     20 short-lived connections and forces RDS to hash a 200x-
+     inflated payload per row. Under the loadgen's steady traffic
+     the RDS db.t3.micro CPU saturates, connections stay open
+     longer waiting for CPU, and DatabaseConnections climbs.
   8. Fix options:
        a. Revert the PR (restore serial /query)
-       b. Reuse ONE connection across the 4 workers (a proper
-          connection pool) instead of opening 4 fresh ones
-       c. Raise max_connections on RDS (masks the problem, doesn't
-          fix it)
-       d. Drop max_workers from 4 to 1-2, or use asyncio without
-          multiplying connections
+       b. Fetch all rows in ONE SELECT (LIMIT 10) and compute the
+          row hash in the api-server process, not in the DB
+       c. Drop max_workers from 20 to 1-2 and reuse a single
+          connection across the shards
+       d. Move the md5 computation out of SQL (it's expensive on
+          the DB and isn't semantically DB work anyway)
 ```
 
 ---
