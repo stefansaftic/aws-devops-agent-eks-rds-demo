@@ -63,10 +63,11 @@ Resources:
               "properties":{
                 "title":"api-server replica health",
                 "metrics":[
-                  ["ContainerInsights","service_number_of_running_pods","ServiceName","api-server","Namespace","api-demo","ClusterName","${ClusterName}",{"stat":"Average","period":60,"label":"Running pods"}],
-                  ["ContainerInsights","pod_number_of_container_restarts","Service","api-server","Namespace","api-demo","ClusterName","${ClusterName}",{"stat":"Sum","period":60,"label":"Container restarts (sum)"}]
+                  ["ContainerInsights","service_number_of_running_pods","Service","api-server","Namespace","api-demo","ClusterName","${ClusterName}",{"stat":"Average","period":60,"label":"Running pods"}],
+                  ["ContainerInsights","pod_number_of_container_restarts","PodName","api-server","Namespace","api-demo","ClusterName","${ClusterName}",{"stat":"Sum","period":60,"label":"Container restarts (sum)"}]
                 ],
-                "view":"timeSeries","region":"${AWS::Region}"
+                "view":"timeSeries","region":"${AWS::Region}",
+                "yAxis":{"left":{"min":0}}
               }
             },
 

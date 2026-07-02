@@ -1,7 +1,18 @@
 ---
 # Continuous load generator for the API server.
-# Sends requests to /health, /query, /write every second to produce
-# a clear signal in CloudWatch when the RDS connection breaks.
+# Sends requests to /health, /query, /write in a tight loop so
+# CloudWatch shows visible baseline activity on both the EKS side
+# (api-server pod CPU) and the RDS side (DatabaseConnections, IOPS,
+# CPU) -- the "healthy state" signal the demo dashboard depends on.
+#
+# 3 replicas x ~15 req/sec each = ~45 req/sec cluster-wide, which
+# yields:
+#   RDS DatabaseConnections: 3-6 sustained (short-lived per request)
+#   RDS WriteIOPS:           ~15 sustained (from /write inserts)
+#   api-server pod CPU:      2-5% baseline (visible on the dashboard)
+#
+# When the demo breaks the API path (rds-break-sg.sh, feature/tighten-
+# probes merge, etc.) the FAIL rate becomes obvious in these logs.
 
 apiVersion: apps/v1
 kind: Deployment
@@ -11,7 +22,7 @@ metadata:
   labels:
     app: api-loadgen
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: api-loadgen
@@ -43,11 +54,13 @@ spec:
                           status = f"FAIL: {e}"
                       ts = time.strftime("%H:%M:%S")
                       print(f"[{ts}] {ep:8s} -> {status}", flush=True)
-                  time.sleep(1)
+                  # Short sleep so the dashboard shows continuous activity
+                  # rather than a once-per-second sawtooth.
+                  time.sleep(0.2)
           resources:
             requests:
-              cpu: 10m
+              cpu: 20m
               memory: 32Mi
             limits:
-              cpu: 50m
+              cpu: 100m
               memory: 64Mi
