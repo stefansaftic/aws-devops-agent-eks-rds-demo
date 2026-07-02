@@ -132,6 +132,7 @@ jobs:
           aws s3 cp cfn/rds.yaml          "s3://${BUCKET}/${PREFIX}/rds.yaml"
           aws s3 cp cfn/fis.yaml          "s3://${BUCKET}/${PREFIX}/fis.yaml"
           aws s3 cp cfn/vpc.yaml          "s3://${BUCKET}/${PREFIX}/vpc.yaml"
+          aws s3 cp cfn/dashboard.yaml    "s3://${BUCKET}/${PREFIX}/dashboard.yaml"
 
           # Update the parent stack with the new parent template, letting
           # parameter defaults from cfn/parent.yaml flow through into
@@ -150,7 +151,7 @@ jobs:
           aws cloudformation update-stack \
             --stack-name "${STACK_NAME}" \
             --template-body file://cfn/parent.yaml \
-            --capabilities CAPABILITY_NAMED_IAM \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
             --parameters \
                 ParameterKey=ProjectName,UsePreviousValue=true \
                 ParameterKey=TemplateBucket,UsePreviousValue=true \

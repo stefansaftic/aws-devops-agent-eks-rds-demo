@@ -37,6 +37,7 @@ aws s3 cp "$ROOT/cfn/eks.yaml" "s3://${BUCKET}/${PREFIX}/eks.yaml" --region "$RE
 aws s3 cp "$ROOT/cfn/fis.yaml" "s3://${BUCKET}/${PREFIX}/fis.yaml" --region "$REGION"
 aws s3 cp "$ROOT/cfn/rds.yaml" "s3://${BUCKET}/${PREFIX}/rds.yaml" --region "$REGION"
 aws s3 cp "$ROOT/cfn/ec2-postgres.yaml" "s3://${BUCKET}/${PREFIX}/ec2-postgres.yaml" --region "$REGION"
+aws s3 cp "$ROOT/cfn/dashboard.yaml"    "s3://${BUCKET}/${PREFIX}/dashboard.yaml"    --region "$REGION"
 
 # Only one ecr-public pull-through cache rule can exist per account, and
 # PullThroughCacheRule is not importable. Detect a pre-existing rule and
@@ -56,7 +57,7 @@ aws cloudformation deploy \
   --region "$REGION" \
   --stack-name "$STACK" \
   --template-file "$ROOT/cfn/parent.yaml" \
-  --capabilities CAPABILITY_NAMED_IAM \
+  --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
   --parameter-overrides \
       ProjectName="$STACK" \
       TemplateBucket="$BUCKET" \

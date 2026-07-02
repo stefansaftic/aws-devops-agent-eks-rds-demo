@@ -95,6 +95,19 @@ Resources:
         DataVolumeIops: !Ref Ec2PostgresDataVolumeIops
         DataVolumeThroughput: !Ref Ec2PostgresDataVolumeThroughput
 
+  # Unified CloudWatch dashboard for the API path (EKS pods -> RDS).
+  # Depends on Eks + Rds so both dimensions (ClusterName, DBInstanceId)
+  # exist as CFN outputs before the dashboard resource is created.
+  DashboardStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [EksStack, RdsStack]
+    Properties:
+      TemplateURL: !Sub https://${TemplateBucket}.s3.amazonaws.com/${TemplatePrefix}/dashboard.yaml
+      Parameters:
+        ProjectName: !Ref ProjectName
+        ClusterName: !GetAtt EksStack.Outputs.ClusterName
+        RdsInstanceId: !GetAtt RdsStack.Outputs.RdsInstanceId
+
 Outputs:
   ClusterName:
     Value: !GetAtt EksStack.Outputs.ClusterName
@@ -134,3 +147,5 @@ Outputs:
     Value: !GetAtt Ec2PostgresStack.Outputs.DashboardUrl
   Ec2PgLoadgenRoleArn:
     Value: !GetAtt EksStack.Outputs.Ec2PgLoadgenRoleArn
+  ApiRdsDashboardUrl:
+    Value: !GetAtt DashboardStack.Outputs.DashboardUrl
