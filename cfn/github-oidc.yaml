@@ -122,10 +122,15 @@ Resources:
             Statement:
               # The workflow re-uploads nested templates to the same
               # template bucket deploy.sh uses, then drives a parent
-              # update-stack. Both operations need to be writes.
+              # update-stack. When the parent adds a new nested stack
+              # resource, CFN CreateStacks that nested stack under the
+              # covers, so we need CreateStack too. DeleteStack is
+              # required for rollback of newly-added nested stacks.
               - Effect: Allow
                 Action:
                   - cloudformation:UpdateStack
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
                   - cloudformation:ValidateTemplate
                   - cloudformation:Describe*
                   - cloudformation:Get*
