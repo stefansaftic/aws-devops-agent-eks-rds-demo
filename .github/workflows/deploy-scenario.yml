@@ -95,6 +95,14 @@ jobs:
             "eks-fail-demo/git-ref=${{ github.ref_name }}" \
             "eks-fail-demo/gha-run=${{ github.run_id }}" \
             --overwrite
+          # Force a rollout so the api-server pods pick up any updated
+          # ConfigMap. Without this, the pods keep running whatever
+          # server.py was in RAM at startup -- so scenarios that only
+          # change the ConfigMap (bad-sql, wrong-db-name,
+          # feature/parallel-query, ...) are silently ineffective
+          # until something else triggers a rollout. `rollout restart`
+          # is idempotent for the pod-template-only-refresh case.
+          kubectl rollout restart deployment/api-server -n api-demo
 
       - name: Show rollout status (do not fail the job on rollout failure)
         # We intentionally let bad scenarios "succeed" the workflow so the
